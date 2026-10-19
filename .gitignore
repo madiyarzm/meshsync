@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Local notes and tool settings
+notes/
+.claude/settings.local.json
