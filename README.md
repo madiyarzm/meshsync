@@ -21,4 +21,5 @@ pio run -e esp32dev -t upload # flash a board over USB
 pip install -r experiments/requirements.txt
 python experiments/run_experiments.py
 python -m pytest experiments
+python experiments/export_golden.py   # regenerate test/test_golden/golden_data.h
 ```
