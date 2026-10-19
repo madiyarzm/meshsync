@@ -1,0 +1,4 @@
+numpy
+scikit-learn
+cbor2
+pytest
