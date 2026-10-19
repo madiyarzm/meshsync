@@ -1,4 +1,5 @@
-// Native unit tests for lib/core. Run: pio test -e native
+// Unit tests for the core (firmware/src/core). Run: pio test -e native
+// The sync protocol end to end is tested by the simulator: .pio/build/native/program --seeds 100
 
 #include <unity.h>
 
@@ -6,6 +7,7 @@
 #include <cstring>
 
 #include "core.h"
+#include "sync.h"
 
 using namespace construct;
 
@@ -362,6 +364,36 @@ void test_crc32_chains_across_pieces() {
     TEST_ASSERT_EQUAL_HEX32(crc32(data, sizeof(data)), crc);
 }
 
+// --- sync packets --------------------------------------------------------------
+
+void test_packets_round_trip_and_reject_damage() {
+    uint8_t packet[MAX_PACKET_BYTES];
+
+    HeartbeatPacket heartbeat = {};
+    heartbeat.sender = 2;
+    heartbeat.versions[2] = 77;
+    size_t length = write_heartbeat(heartbeat, packet, sizeof(packet));
+    HeartbeatPacket heartbeat_back;
+    TEST_ASSERT_TRUE(read_heartbeat(packet, length, heartbeat_back));
+    TEST_ASSERT_EQUAL_UINT32(77, heartbeat_back.versions[2]);
+    TEST_ASSERT_FALSE(read_heartbeat(packet, length - 1, heartbeat_back));
+
+    uint8_t data[MAX_CHUNK_DATA];
+    for (size_t i = 0; i < sizeof(data); i++) {
+        data[i] = uint8_t(i);
+    }
+    ChunkPacket chunk = {1, 3, 9, 0, 22, 0xDEADBEEF, uint8_t(MAX_CHUNK_DATA), data};
+    length = write_chunk(chunk, packet, sizeof(packet));
+    TEST_ASSERT_EQUAL_UINT32(MAX_PACKET_BYTES, length);  // a full chunk fills one ESP-NOW frame
+    ChunkPacket chunk_back;
+    TEST_ASSERT_TRUE(read_chunk(packet, length, chunk_back));
+    TEST_ASSERT_EQUAL_HEX32(0xDEADBEEF, chunk_back.slot_crc);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(data, chunk_back.data, MAX_CHUNK_DATA);
+    TEST_ASSERT_FALSE(read_chunk(packet, length - 1, chunk_back));  // truncated
+    packet[0] ^= 0xFF;
+    TEST_ASSERT_TRUE(packet_type(packet, length) == PacketType::Invalid);  // bad magic
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_dimensions_match_prototype);
@@ -384,5 +416,6 @@ int main() {
     RUN_TEST(test_raw_rejects_impossible_contents);
     RUN_TEST(test_crc32_known_values);
     RUN_TEST(test_crc32_chains_across_pieces);
+    RUN_TEST(test_packets_round_trip_and_reject_damage);
     return UNITY_END();
 }

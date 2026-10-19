@@ -1,5 +1,5 @@
 // Golden test: the C++ core must give exactly the same answers as the Python prototype
-// on the Phase 1 data. Data comes from experiments/export_golden.py. Run: pio test -e native
+// on the Phase 1 data. Data comes from: python experiments/run_experiments.py --export-golden
 
 #include <unity.h>
 

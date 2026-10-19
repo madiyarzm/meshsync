@@ -5,7 +5,7 @@ constexpr char BOARD_LETTER = 'A';
 
 #include <cstdint>
 
-#include "core_constants.h"
+#include "src/core/core.h"
 
 constexpr int NODE_ID = BOARD_LETTER - 'A';  // the slot this board owns
 static_assert(NODE_ID >= 0 && NODE_ID < construct::MAX_NODES, "BOARD_LETTER must be A-H");

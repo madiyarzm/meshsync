@@ -2,37 +2,40 @@
 
 Offline federated learning over a mesh of ESP32 boards, synced with a CRDT over ESP-NOW.
 
-## Build and test (PlatformIO)
+## Layout
+
+```
+firmware/        ESP32 sketch (opens in the Arduino IDE); firmware/src/core is the portable core
+sim/sim.cpp      laptop simulator of the mesh with a faulty radio
+test/            C++ tests for the core, including a golden test against the Python prototype
+experiments/     Python prototype and Phase 1 experiments
+```
+
+## Flash a board (Arduino IDE)
+
+1. Install the "esp32" board package by Espressif (version 3.x) in Boards Manager.
+2. Open `firmware/firmware.ino`, set `BOARD_LETTER` in `config.h` ('A', 'B', ...).
+3. Board: "ESP32 Dev Module", then Upload.
+4. On a phone, join Wi-Fi `construct-<letter>` and open http://192.168.4.1.
+
+Or with PlatformIO: `pio run -e esp32dev -t upload`.
+
+## Laptop: tests and simulator (PlatformIO)
 
 Requires [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html)
-running on Python 3.10-3.14 (for example `uv tool install platformio --python 3.13`).
+on Python 3.10-3.14 (for example `uv tool install platformio --python 3.13`).
 
 ```
-pio test -e native                      # C++ unit, golden, and sync tests on the laptop
-pio run -e native                       # build the simulator
+pio test -e native                      # C++ unit and golden tests
+pio run -e native                       # build the simulator (rebuild after pio test)
 .pio/build/native/program               # one simulated run (seed 1, 6 hubs)
-.pio/build/native/program 42 8          # seed 42, 8 hubs
-.pio/build/native/program --seeds 200   # many runs, prints a summary
-pio run -e esp32dev                     # build the ESP32 firmware
+.pio/build/native/program --seeds 100   # automated sync test: all runs must converge
 ```
-
-## Flash a board
-
-Set `BOARD_LETTER` at the top of `src/config.h` ('A', 'B', ...), then:
-
-```
-pio run -e esp32dev -t upload
-pio device monitor
-```
-
-Join the Wi-Fi network `construct-<letter>` and open http://192.168.4.1.
 
 ## Python prototype
 
 ```
 pip install -r experiments/requirements.txt
-python experiments/run_experiments.py
-python -m pytest experiments
-python experiments/export_golden.py   # regenerate test/test_golden/golden_data.h
-python experiments/mock_hub.py        # the hub's web page on http://localhost:8000, no board needed
+python experiments/run_experiments.py                   # accuracy, exactness, size tables
+python experiments/run_experiments.py --export-golden   # also rewrite test/test_golden/golden_data.h
 ```
