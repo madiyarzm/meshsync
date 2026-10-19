@@ -397,8 +397,10 @@ void setup() {
         Serial.println("flash storage unavailable: this hub will forget everything on reboot");
     }
 
+    char wifi_name[32];
+    std::snprintf(wifi_name, sizeof(wifi_name), "%s-%c", WIFI_NAME_PREFIX, BOARD_LETTER);
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_NAME, AP_PASSWORD, WIFI_CHANNEL, 0, AP_MAX_CLIENTS);
+    WiFi.softAP(wifi_name, AP_PASSWORD, WIFI_CHANNEL, 0, AP_MAX_CLIENTS);
     if (!radio_begin()) {
         Serial.println("ESP-NOW failed to start: this hub will not sync");
     }
@@ -411,7 +413,7 @@ void setup() {
     server.onNotFound(handle_page);  // any other address shows the page
     server.begin();
 
-    Serial.printf("room %c ready: join Wi-Fi \"%s\" and open http://%s\n", BOARD_LETTER, WIFI_NAME,
+    Serial.printf("room %c ready: join Wi-Fi \"%s\" and open http://%s\n", BOARD_LETTER, wifi_name,
                   WiFi.softAPIP().toString().c_str());
 }
 
