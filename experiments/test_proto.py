@@ -173,9 +173,20 @@ def test_gaussian_nb_picks_closer_class_with_confidence():
     assert 0.5 < confidence <= 1.0
 
 
-def test_gaussian_nb_rejects_non_positive_floor():
+@pytest.mark.parametrize("var_floor", [0.0, -1.0, float("nan")])
+def test_gaussian_nb_rejects_bad_floor(var_floor):
     with pytest.raises(ValueError):
-        GaussianNB(combine([Slot(0)]), 0.0)
+        GaussianNB(combine([Slot(0)]), var_floor)
+
+
+def test_predict_rejects_bad_drawing():
+    slot = Slot(0)
+    slot.teach([1] * 64, 1)
+    totals = combine([slot])
+    with pytest.raises(ValueError):
+        nearest_centroid_predict(totals, [17] * 64)
+    with pytest.raises(ValueError):
+        GaussianNB(totals, 1.0).predict([0] * 63)
 
 
 # --- serialization ----------------------------------------------------------

@@ -12,9 +12,19 @@ NUM_CLASSES = 10
 NUM_FEATURES = 64  # 8x8 grid
 MAX_PIXEL = 16
 UINT32_MAX = 2**32 - 1
+VAR_FLOOR = 1.0  # chosen by the validation sweep in run_experiments.py (training data only)
 
-# sumsq grows by at most 16*16 per teach, so this cap keeps every field inside uint32.
-MAX_SAMPLES_PER_CLASS = UINT32_MAX // (MAX_PIXEL * MAX_PIXEL)
+# Per slot, per digit. Keeps uint32 fields far from overflow, and with up to 32 nodes keeps the
+# mesh-wide count per digit under 2^25, so every C++ 64-bit intermediate in the models fits.
+MAX_SAMPLES_PER_CLASS = 1_000_000
+
+
+def check_pixels(pixels):
+    if len(pixels) != NUM_FEATURES:
+        raise ValueError(f"expected {NUM_FEATURES} pixels, got {len(pixels)}")
+    for value in pixels:
+        if not isinstance(value, int) or value < 0 or value > MAX_PIXEL:
+            raise ValueError(f"pixel values must be ints 0-{MAX_PIXEL}, got {value!r}")
 
 
 class Slot:
@@ -49,11 +59,7 @@ class Slot:
         """Add one labelled drawing. Validates everything before changing any field."""
         if not isinstance(label, int) or label < 0 or label >= NUM_CLASSES:
             raise ValueError(f"label must be an int 0-{NUM_CLASSES - 1}, got {label!r}")
-        if len(pixels) != NUM_FEATURES:
-            raise ValueError(f"expected {NUM_FEATURES} pixels, got {len(pixels)}")
-        for value in pixels:
-            if not isinstance(value, int) or value < 0 or value > MAX_PIXEL:
-                raise ValueError(f"pixel values must be ints 0-{MAX_PIXEL}, got {value!r}")
+        check_pixels(pixels)
         if self.count[label] >= MAX_SAMPLES_PER_CLASS or self.version >= UINT32_MAX:
             raise OverflowError("slot is full: another teach would overflow uint32")
 
@@ -137,6 +143,7 @@ def nearest_centroid_predict(totals, pixels):
     Uses n*(x - mean) = x*n - sum, which is an exact integer, so the only
     rounding is the final division. Ties go to the lower label.
     """
+    check_pixels(pixels)
     best_label = -1
     best_distance = math.inf
     for label in range(NUM_CLASSES):
@@ -162,7 +169,7 @@ class GaussianNB:
     """
 
     def __init__(self, totals, var_floor):
-        if var_floor <= 0:
+        if not var_floor > 0:  # also rejects NaN
             raise ValueError("var_floor must be positive")
         self.labels = []  # only classes that have at least one sample
         self.log_prior = {}
@@ -183,7 +190,10 @@ class GaussianNB:
                 sq = totals.sumsq[label][j]
                 means[j] = float(s) / float(n)
                 # n*sumsq - sum^2 is an exact non-negative integer (n^2 times the variance).
-                variances[j] = float(n * sq - s * s) / float(n * n) + var_floor
+                spread = n * sq - s * s
+                if spread < 0:
+                    spread = 0  # impossible for real data; guards against a corrupted slot
+                variances[j] = float(spread) / float(n * n) + var_floor
                 log_norm += -0.5 * math.log(2.0 * math.pi * variances[j])
             self.labels.append(label)
             self.log_prior[label] = math.log(float(n) / float(total))
@@ -192,6 +202,7 @@ class GaussianNB:
             self.log_norm[label] = log_norm
 
     def log_scores(self, pixels):
+        check_pixels(pixels)
         scores = {}
         for label in self.labels:
             score = self.log_prior[label] + self.log_norm[label]

@@ -15,6 +15,7 @@ from sklearn.neighbors import NearestCentroid as SklearnNearestCentroid
 from construct_proto import (
     NUM_CLASSES,
     RAW_SLOT_BYTES,
+    VAR_FLOOR,
     GaussianNB,
     Node,
     Slot,
@@ -26,7 +27,6 @@ from construct_proto import (
     serialize_raw,
 )
 
-VAR_FLOOR = 1.0  # chosen by the validation sweep below (training data only)
 SEED = 0
 
 
