@@ -16,7 +16,7 @@ experiments/     Python prototype and Phase 1 experiments
 1. Install the "esp32" board package by Espressif (version 3.x) in Boards Manager.
 2. Open `firmware/firmware.ino`, set `BOARD_LETTER` in `config.h` ('A', 'B', ...).
 3. Board: "ESP32 Dev Module", then Upload.
-4. On a phone, join Wi-Fi `construct-<letter>` and open http://192.168.4.1.
+4. On a phone, join Wi-Fi `Madiyar-Hub` and open http://192.168.4.1.
 
 Or with PlatformIO: `pio run -e esp32dev -t upload`.
 
