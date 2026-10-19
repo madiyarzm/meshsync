@@ -7,4 +7,6 @@
 #include "crc32.h"
 #include "model.h"
 #include "node.h"
+#include "protocol.h"
 #include "slot.h"
+#include "sync.h"
