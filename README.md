@@ -5,7 +5,8 @@ Offline federated learning over a mesh of ESP32 boards, synced with a CRDT over 
 ## Layout
 
 ```
-firmware/        ESP32 sketch (opens in the Arduino IDE); firmware/src/core is the portable core
+firmware/        ESP32 sketch (opens in the Arduino IDE)
+firmware/src/meshstate/   portable library: mergeable slots, deletion, models, sync (C++17, no allocation)
 sim/sim.cpp      laptop simulator of the mesh with a faulty radio
 test/            C++ tests for the core, including a golden test against the Python prototype
 experiments/     Python prototype and Phase 1 experiments
@@ -19,6 +20,7 @@ experiments/     Python prototype and Phase 1 experiments
 4. On a phone, join Wi-Fi `Madiyar-Hub-<letter>` and open http://192.168.4.1.
 
 Or with PlatformIO: `pio run -e esp32dev -t upload`.
+Send `BENCH` in the serial monitor (115200) to time merges and predictions on the board.
 
 ## Laptop: tests and simulator (PlatformIO)
 
