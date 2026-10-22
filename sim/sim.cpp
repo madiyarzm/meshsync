@@ -14,8 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "core.h"
+#include "models.h"
+#include "replica.h"
 #include "sync.h"
+
+using namespace meshstate;
 
 namespace sim {
 
@@ -47,36 +50,38 @@ struct FaultConfig {
 struct RadioStats {
     uint32_t sent;  // one per receiver, since a broadcast reaches each hub separately
     uint32_t delivered;
-    uint32_t dropped;     // by the fault model
-    uint32_t blocked;     // by a partition
+    uint32_t dropped;
+    uint32_t blocked;  // by a partition
     uint32_t duplicated;
     uint32_t corrupted;
     uint32_t overflowed;  // in-flight queue full (should stay 0)
 };
 
+constexpr uint8_t SIM_APP = 2;
+constexpr uint32_t FLUSH_INTERVAL_MS = 2000;  // same as the firmware: save open sessions every 2 s
+
 class World {
 public:
     static constexpr uint32_t STEP_MS = 5;
 
-    // Returns false if num_hubs is not 1 to MAX_NODES.
     bool reset(uint64_t seed, int num_hubs, const FaultConfig& faults);
-
-    // group_of_hub[i] = group number of hub i. Hubs only hear hubs in the same group.
     void set_groups(const int group_of_hub[]);
     void heal();
-
     void advance(uint32_t duration_ms);
-    void teach_random(int hub);
 
-    // True when every hub holds exactly the same slots as their owners.
-    bool converged() const;
+    // A hub records one random sample for whoever is calibrating there now.
+    void teach_random(int hub);
+    // The current person at this hub finishes; the next sample starts a new user's sessions.
+    void finish_user(int hub);
+    void finish_everyone();
+
+    bool converged();
 
     uint32_t now_ms() const { return now_ms_; }
-    int num_hubs() const { return num_hubs_; }
     Random& random() { return random_; }
     const RadioStats& radio_stats() const { return radio_; }
-    const construct::Node& node(int hub) const { return nodes_[hub]; }
-    const construct::SyncEngine& engine(int hub) const { return engines_[hub]; }
+    Replica& replica(int hub) { return replicas_[hub]; }
+    const SyncEngine& engine(int hub) const { return engines_[hub]; }
 
 private:
     struct InFlight {
@@ -85,11 +90,17 @@ private:
         uint8_t from;
         uint8_t length;
         uint32_t deliver_at_ms;
-        uint8_t data[construct::MAX_PACKET_BYTES];
+        uint8_t data[MAX_PACKET_BYTES];
     };
     struct HubContext {
         World* world;
         int hub;
+    };
+    struct Calibration {
+        bool active;
+        uint16_t user;
+        SlotKey gesture;
+        SlotKey gaze;
     };
     static constexpr int MAX_IN_FLIGHT = 8192;
 
@@ -97,41 +108,31 @@ private:
     void broadcast(int from, const uint8_t* data, size_t length);
     void queue_packet(int from, int to, const uint8_t* data, size_t length);
     void deliver_due_packets();
-    bool connected(int a, int b) const { return group_[a] == group_[b]; }
 
     int num_hubs_ = 0;
     uint32_t now_ms_ = 0;
+    uint32_t last_flush_ms_ = 0;
+    uint16_t next_user_ = 1;
     FaultConfig faults_ = {};
     Random random_;
     RadioStats radio_ = {};
-    int group_[construct::MAX_NODES] = {};
-    construct::RawCodec codec_;
-    construct::Node nodes_[construct::MAX_NODES];
-    construct::SyncEngine engines_[construct::MAX_NODES];
-    HubContext contexts_[construct::MAX_NODES];
+    int group_[MAX_DEVICES] = {};
+    Calibration calibration_[MAX_DEVICES] = {};
+    MemoryStore<MAX_SLOTS> stores_[MAX_DEVICES];
+    Replica replicas_[MAX_DEVICES];
+    SyncEngine engines_[MAX_DEVICES];
+    HubContext contexts_[MAX_DEVICES];
     InFlight in_flight_[MAX_IN_FLIGHT];
 };
 
-// One full run: connected -> several random partitions (teaching continues) -> heal -> wait.
-struct ScenarioResult {
-    bool converged;
-    uint32_t heal_ms;      // time when the last partition was healed
-    uint32_t converge_ms;  // time from heal until all hubs were identical
-    uint32_t teaches;
-};
-
-ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const FaultConfig& faults, bool verbose);
-
-using construct::MAX_NODES;
-using construct::NUM_CLASSES;
-using construct::NUM_FEATURES;
-
 bool World::reset(uint64_t seed, int num_hubs, const FaultConfig& faults) {
-    if (num_hubs < 1 || num_hubs > MAX_NODES) {
+    if (num_hubs < 1 || num_hubs > MAX_DEVICES) {
         return false;
     }
     num_hubs_ = num_hubs;
     now_ms_ = 0;
+    last_flush_ms_ = 0;
+    next_user_ = 1;
     faults_ = faults;
     random_.seed(seed);
     radio_ = {};
@@ -140,9 +141,11 @@ bool World::reset(uint64_t seed, int num_hubs, const FaultConfig& faults) {
     }
     for (int hub = 0; hub < num_hubs_; hub++) {
         group_[hub] = 0;
-        nodes_[hub].init(hub);
+        calibration_[hub] = {};
+        stores_[hub].wipe();
+        replicas_[hub].begin(uint8_t(hub), &stores_[hub]);
         contexts_[hub] = {this, hub};
-        engines_[hub].begin(&nodes_[hub], &codec_, &World::send_from_hub, nullptr, &contexts_[hub], now_ms_);
+        engines_[hub].begin(&replicas_[hub], SIM_APP, &World::send_from_hub, nullptr, &contexts_[hub], now_ms_);
     }
     return true;
 }
@@ -212,7 +215,7 @@ void World::deliver_due_packets() {
         }
         packet.used = false;
         // Checked on arrival, so packets in the air when a partition starts are lost too.
-        if (!connected(packet.from, packet.to)) {
+        if (group_[packet.from] != group_[packet.to]) {
             radio_.blocked++;
             continue;
         }
@@ -226,6 +229,12 @@ void World::advance(uint32_t duration_ms) {
     while (now_ms_ < end_ms) {
         now_ms_ += STEP_MS;
         deliver_due_packets();
+        if (now_ms_ - last_flush_ms_ >= FLUSH_INTERVAL_MS) {
+            for (int hub = 0; hub < num_hubs_; hub++) {
+                replicas_[hub].flush();
+            }
+            last_flush_ms_ = now_ms_;
+        }
         for (int hub = 0; hub < num_hubs_; hub++) {
             engines_[hub].tick(now_ms_);
         }
@@ -233,28 +242,71 @@ void World::advance(uint32_t duration_ms) {
 }
 
 void World::teach_random(int hub) {
-    uint8_t pixels[NUM_FEATURES];
-    for (int j = 0; j < NUM_FEATURES; j++) {
-        pixels[j] = uint8_t(random_.below(construct::MAX_PIXEL + 1));
+    Calibration& calibration = calibration_[hub];
+    Replica& replica = replicas_[hub];
+    if (!calibration.active) {
+        calibration.user = next_user_++;
+        if (replica.open_session(PayloadType::GestureBlend, calibration.user, calibration.gesture) != Result::Ok ||
+            replica.open_session(PayloadType::Gaze, calibration.user, calibration.gaze) != Result::Ok) {
+            replica.close_session(calibration.gesture);
+            return;  // store full: this hub can't take a new person
+        }
+        calibration.active = true;
     }
-    nodes_[hub].teach(pixels, int(random_.below(NUM_CLASSES)));
+    int32_t features[FACE_FEATURES];
+    for (int f = 0; f < FACE_FEATURES; f++) {
+        features[f] = int32_t(random_.below(2001)) - 1000;
+    }
+    replica.add_gesture(calibration.gesture, int(random_.below(GESTURE_CLASSES)), features);
+    replica.add_gaze(calibration.gaze, features, int32_t(random_.below(1001)), int32_t(random_.below(1001)));
 }
 
-bool World::converged() const {
+void World::finish_user(int hub) {
+    Calibration& calibration = calibration_[hub];
+    if (calibration.active) {
+        replicas_[hub].close_session(calibration.gesture);
+        replicas_[hub].close_session(calibration.gaze);
+        calibration.active = false;
+    }
+}
+
+void World::finish_everyone() {
     for (int hub = 0; hub < num_hubs_; hub++) {
-        for (int owner = 0; owner < MAX_NODES; owner++) {
-            bool owner_exists = owner < num_hubs_;
-            const construct::Slot& copy = nodes_[hub].slots[owner];
-            if (owner_exists && copy != nodes_[owner].slots[owner]) {
-                return false;
-            }
-            if (!owner_exists && copy.version != 0) {
-                return false;  // a slot nobody owns appeared: corrupted data got applied
-            }
+        finish_user(hub);
+    }
+}
+
+// Identical state everywhere, and every hub's running totals equal a fresh recount.
+bool World::converged() {
+    static DigitsTotals digits;
+    static GestureTotals gestures[2];
+    static GazeTotals gaze;
+    uint32_t digest = replicas_[0].digest();
+    for (int hub = 0; hub < num_hubs_; hub++) {
+        Replica& replica = replicas_[hub];
+        if (replica.digest() != digest || replica.recount(digits, gestures, gaze) != Result::Ok) {
+            return false;
+        }
+        if (std::memcmp(&gaze, &replica.gaze_totals(false), sizeof(gaze)) != 0 ||
+            std::memcmp(&gestures[0], &replica.gesture_totals(PayloadType::GestureBlend, false),
+                        sizeof(gestures[0])) != 0) {
+            return false;
+        }
+        if (std::memcmp(&replica.gaze_totals(false), &replicas_[0].gaze_totals(false), sizeof(gaze)) != 0) {
+            return false;
         }
     }
     return true;
 }
+
+// One full run: connected -> several random partitions (people keep calibrating) -> heal -> wait.
+struct ScenarioResult {
+    bool converged;
+    uint32_t heal_ms;
+    uint32_t converge_ms;  // time from heal until all hubs were identical
+    uint32_t samples;
+    int slots;
+};
 
 ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const FaultConfig& faults, bool verbose) {
     ScenarioResult result = {};
@@ -262,10 +314,9 @@ ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const Fau
     Random& random = world.random();
 
     // Round 1 is fully connected. Later rounds split hubs randomly into 2-3 groups.
-    // Each round lasts 5-15 s and hubs keep teaching throughout.
     const int rounds = 4;
     for (int round = 0; round < rounds; round++) {
-        int groups[MAX_NODES];
+        int groups[MAX_DEVICES];
         int group_count = round == 0 ? 1 : 2 + int(random.below(2));
         for (int hub = 0; hub < num_hubs; hub++) {
             groups[hub] = int(random.below(uint32_t(group_count)));
@@ -280,19 +331,24 @@ ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const Fau
         }
         uint32_t round_ms = 5000 + random.below(10001);
         for (uint32_t elapsed = 0; elapsed < round_ms; elapsed += 100) {
-            if (random.chance(0.3)) {
-                world.teach_random(int(random.below(uint32_t(num_hubs))));
-                result.teaches++;
+            int hub = int(random.below(uint32_t(num_hubs)));
+            if (random.chance(0.5)) {
+                world.teach_random(hub);
+                result.samples++;
+            }
+            if (random.chance(0.01)) {
+                world.finish_user(hub);  // the person leaves; someone new sits down later
             }
             world.advance(100);
         }
     }
 
+    world.finish_everyone();
     world.heal();
     result.heal_ms = world.now_ms();
     if (verbose) {
-        std::printf("t=%6.1fs  healed, teaching stopped (%u drawings taught in total)\n",
-                    result.heal_ms / 1000.0, unsigned(result.teaches));
+        std::printf("t=%6.1fs  healed, calibration stopped (%u samples recorded)\n", result.heal_ms / 1000.0,
+                    unsigned(result.samples));
     }
     const uint32_t timeout_ms = 120000;
     while (world.now_ms() - result.heal_ms < timeout_ms) {
@@ -303,6 +359,7 @@ ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const Fau
             break;
         }
     }
+    result.slots = world.replica(0).slot_count();
     return result;
 }
 
@@ -311,7 +368,7 @@ ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const Fau
 // Not built into the unit tests, which have their own main().
 #ifndef PIO_UNIT_TESTING
 
-static sim::World world;  // several MB: too big for the stack
+static sim::World world;  // tens of MB: too big for the stack
 
 static const sim::FaultConfig FAULTS = {
     0.20,  // drop 20% of packets
@@ -326,19 +383,16 @@ static void print_run(const sim::ScenarioResult& result, int num_hubs) {
     std::printf("\nradio: %u sent, %u delivered, %u dropped, %u blocked by partition, %u duplicated, %u corrupted\n",
                 unsigned(radio.sent), unsigned(radio.delivered), unsigned(radio.dropped), unsigned(radio.blocked),
                 unsigned(radio.duplicated), unsigned(radio.corrupted));
-    std::printf("hub  %-32s%13s  %12s  %9s\n", "version vector", "slots applied", "crc failures", "abandoned");
+    std::printf("hub  slots  digest      slots applied  crc failures  abandoned\n");
     for (int hub = 0; hub < num_hubs; hub++) {
-        const construct::SyncStats& stats = world.engine(hub).stats();
-        std::printf("%c    ", 'A' + hub);
-        for (int owner = 0; owner < num_hubs; owner++) {
-            std::printf("%3u ", unsigned(world.node(hub).slots[owner].version));
-        }
-        std::printf("%*s%13u  %12u  %9u\n", (8 - num_hubs) * 4, "", unsigned(stats.slots_applied),
+        const SyncStats& stats = world.engine(hub).stats();
+        std::printf("%c    %5d  %08X  %13u  %12u  %9u\n", 'A' + hub, world.replica(hub).slot_count(),
+                    unsigned(world.replica(hub).digest()), unsigned(stats.slots_applied),
                     unsigned(stats.crc_failures), unsigned(stats.transfers_abandoned));
     }
     if (result.converged) {
-        std::printf("\nCONVERGED %.1f s after healing: all %d hubs hold identical slots\n",
-                    result.converge_ms / 1000.0, num_hubs);
+        std::printf("\nCONVERGED %.1f s after healing: all %d hubs hold identical slots (%d) and totals\n",
+                    result.converge_ms / 1000.0, num_hubs, result.slots);
     } else {
         std::printf("\nNOT CONVERGED within the timeout\n");
     }
@@ -369,8 +423,8 @@ int main(int argc, char** argv) {
 
     uint64_t seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1;
     int num_hubs = argc > 2 ? std::atoi(argv[2]) : 6;
-    if (num_hubs < 1 || num_hubs > construct::MAX_NODES) {
-        std::printf("hubs must be 1-%d\n", construct::MAX_NODES);
+    if (num_hubs < 1 || num_hubs > MAX_DEVICES) {
+        std::printf("hubs must be 1-%d\n", MAX_DEVICES);
         return 1;
     }
     std::printf("seed %llu, %d hubs, faults: drop %.0f%%, duplicate %.0f%%, corrupt %.0f%%, delay %u-%u ms\n",

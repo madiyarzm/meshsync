@@ -1500,8 +1500,8 @@ static const uint8_t train_room[NUM_TRAIN] = {
     1, 1, 0, 0, 1, 1, 1,
 };
 
-// zlib.crc32 of each room's own slot in raw format, before merging.
-static const uint32_t room_slot_crc[2] = {0xB51D5CCFu, 0xEEA3F9D9u};
+// zlib.crc32 of each room's own slot payload (raw bytes after the version), before merging.
+static const uint32_t room_payload_crc[2] = {0x4E9DEF10u, 0x29A3D437u};
 
 static const uint8_t test_pixels[NUM_TEST][64] = {
     {0, 0, 7, 16, 14, 3, 0, 0, 0, 0, 9, 14, 11, 15, 0, 0, 0, 0, 1, 5, 0, 15, 5, 0, 0, 0, 0, 0, 0, 16, 5, 0, 0, 0, 0, 0, 3, 16, 4, 0, 0, 0, 0, 1, 12, 14, 1, 0, 0, 0, 5, 12, 16, 16, 14, 1, 0, 0, 8, 16, 14, 10, 13, 3},

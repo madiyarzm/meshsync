@@ -331,7 +331,9 @@ def export_golden(train_x, test_x, train_y, test_y):
         room = 0 if label <= 4 else 1
         rooms[room].teach(pixels, label)
         train_room.append(room)
-    slot_crc = [zlib.crc32(serialize_raw(rooms[r].slots[r])) for r in range(2)]
+    # CRC of the payload only (the raw bytes after the 4-byte version), which is exactly the
+    # payload layout of a C++ digit slot; the C++ slot header is checked separately.
+    slot_crc = [zlib.crc32(serialize_raw(rooms[r].slots[r])[4:]) for r in range(2)]
 
     scenarios = [combine(rooms[0].slots), combine(rooms[1].slots)]
     rooms[0].merge_from(rooms[1])
@@ -379,8 +381,8 @@ def export_golden(train_x, test_x, train_y, test_y):
         c_list(train_room),
         "};",
         "",
-        "// zlib.crc32 of each room's own slot in raw format, before merging.",
-        f"static const uint32_t room_slot_crc[2] = {{0x{slot_crc[0]:08X}u, 0x{slot_crc[1]:08X}u}};",
+        "// zlib.crc32 of each room's own slot payload (raw bytes after the version), before merging.",
+        f"static const uint32_t room_payload_crc[2] = {{0x{slot_crc[0]:08X}u, 0x{slot_crc[1]:08X}u}};",
         "",
         "static const uint8_t test_pixels[NUM_TEST][64] = {",
         c_rows([p for p, _ in test], str),
@@ -409,7 +411,7 @@ def export_golden(train_x, test_x, train_y, test_y):
     GOLDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_FILE.write_text("\n".join(parts))
     print(f"wrote {GOLDEN_FILE} ({GOLDEN_FILE.stat().st_size} bytes)")
-    print(f"train {len(train)}, test {len(test)}, room slot CRCs 0x{slot_crc[0]:08X} 0x{slot_crc[1]:08X}")
+    print(f"train {len(train)}, test {len(test)}, room payload CRCs 0x{slot_crc[0]:08X} 0x{slot_crc[1]:08X}")
 
 
 def main():
