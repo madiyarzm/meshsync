@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meshstate playground</title>
+<style>
+  :root {
+    --bg: #0b1020; --panel: #121a2e; --panel-2: #172038; --line: #24304d; --text: #e6ebf5;
+    --muted: #8a96b2; --accent: #6ea8ff; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: calc(100vh - 54px); }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .stage { position: relative; display: flex; flex-direction: column; }
+  .metrics { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px; }
+  .pill { font: 12px var(--mono); padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+  .pill b { color: var(--text); font-weight: 600; }
+  .pill.ok { border-color: #1f5e3a; color: var(--ok); } .pill.ok b { color: var(--ok); }
+  .pill.warn { border-color: #6b5316; color: var(--warn); } .pill.warn b { color: var(--warn); }
+  .pill.bad { border-color: #6b2525; color: var(--bad); } .pill.bad b { color: var(--bad); }
+  /* The whole ring always fits the window, with room for the story text below. */
+  svg { width: 100%; height: calc(100vh - 205px); min-height: 340px; }
+  .narration { margin: 0 20px 16px; padding: 12px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); min-height: 46px; color: var(--muted); }
+  .narration strong { color: var(--text); }
+  aside { border-left: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: calc(100vh - 54px); }
+  @media (max-width: 900px) { aside { border-left: 0; border-top: 1px solid var(--line); max-height: none; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  button, select { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #0b1020; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
+  label.slider { display: grid; grid-template-columns: 82px 1fr 38px; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 4px 0; }
+  label.slider span:last-child { font-family: var(--mono); color: var(--text); text-align: right; }
+  input[type=range] { accent-color: var(--accent); width: 100%; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 10px; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); }
+  ol.events { list-style: none; margin: 0; padding: 0; font-size: 12px; font-family: var(--mono); color: var(--muted); }
+  ol.events li { padding: 3px 0; border-bottom: 1px solid var(--line); }
+  ol.events li:last-child { border-bottom: 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  #error { display: none; margin: 20px; padding: 14px; border-radius: 10px; background: #2a1414; border: 1px solid #6b2525; }
+</style>
+</head>
+<body>
+<header>
+  <h1>meshstate playground</h1>
+  <span class="sub">The same C++ that runs on the ESP32 hubs, compiled to WebAssembly. Same color = identical state.</span>
+</header>
+<div id="error">Could not load <code>meshstate_wasm.js</code>. Rebuild it with <code>web/playground/build.sh</code>.</div>
+<div class="layout">
+  <div class="stage">
+    <div class="metrics">
+      <span class="pill" id="state-pill">state: <b>…</b></span>
+      <span class="pill" id="resurrect-pill">deleted data that came back: <b>0</b></span>
+      <span class="pill" id="lost-pill">deleted by mistake: <b>0</b></span>
+      <span class="pill">time <b id="m-time">0.0 s</b></span>
+      <span class="pill">packets <b id="m-sent">0</b></span>
+      <span class="pill">dropped <b id="m-dropped">0</b></span>
+      <span class="pill">blocked <b id="m-blocked">0</b></span>
+      <span class="pill">corrupted <b id="m-corrupted">0</b></span>
+    </div>
+    <svg id="mesh" viewBox="0 0 800 600" aria-label="Mesh of hubs">
+      <g id="links"></g>
+      <g id="packets"></g>
+      <g id="hubs"></g>
+    </svg>
+    <div class="narration" id="narration">Click a hub to select it. Click a line to cut or restore that link.</div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Simulation</h2>
+      <div class="row">
+        <button id="play">Pause</button>
+        <select id="speed">
+          <option value="0.5">0.5× speed</option>
+          <option value="1" selected>1× speed</option>
+          <option value="2">2× speed</option>
+          <option value="4">4× speed</option>
+        </select>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <select id="hub-count">
+          <option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option>
+        </select>
+        <button id="reset">Reset with this many hubs</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Radio</h2>
+      <label class="slider"><span>Loss</span><input type="range" id="drop" min="0" max="60" value="20"><span id="drop-v">20%</span></label>
+      <label class="slider"><span>Duplicates</span><input type="range" id="dup" min="0" max="30" value="10"><span id="dup-v">10%</span></label>
+      <label class="slider"><span>Corruption</span><input type="range" id="corrupt" min="0" max="10" value="1"><span id="corrupt-v">1%</span></label>
+      <div class="legend" style="margin-top:8px">
+        <span><i style="background:#64748b"></i>heartbeat</span>
+        <span><i style="background:#6ea8ff"></i>inventory</span>
+        <span><i style="background:#fbbf24"></i>request</span>
+        <span><i style="background:#4ade80"></i>slot chunk</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Network</h2>
+      <div class="row">
+        <button id="heal">Heal all</button>
+        <button id="split">Split in two</button>
+        <button id="line">Chain (neighbors only)</button>
+      </div>
+      <div class="hint">Click any line between two hubs to cut or restore it.</div>
+    </section>
+
+    <section>
+      <h2 id="hub-title">Hub A</h2>
+      <dl>
+        <dt>Person here</dt><dd id="h-person">nobody</dd>
+        <dt>Slots</dt><dd id="h-slots">0</dd>
+        <dt>Samples known</dt><dd id="h-samples">0</dd>
+        <dt>Tombstones</dt><dd id="h-tombs">0</dd>
+        <dt>Deleted users</dt><dd id="h-users">0</dd>
+        <dt>Digest</dt><dd id="h-digest">0</dd>
+      </dl>
+      <div class="row">
+        <button id="calibrate">Start calibrating</button>
+        <button id="isolate">Cut this hub off</button>
+        <button id="reboot">Power cut</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="delete-person" class="danger">Delete this person's data</button>
+        <button id="delete-slot" class="danger">Delete one slot</button>
+      </div>
+      <div class="hint">A power cut loses only samples not yet saved; saved state reloads and nobody ever saw the lost versions.</div>
+    </section>
+
+    <section>
+      <h2>Story</h2>
+      <button id="story">Play: deletion while a hub is offline</button>
+      <div class="hint">A person's data is deleted while one hub is cut off and still recording them. After the network heals, none of it survives anywhere.</div>
+    </section>
+
+    <section>
+      <h2>Recent sync events</h2>
+      <ol class="events" id="events"><li>none yet</li></ol>
+    </section>
+  </aside>
+</div>
+
+<script src="meshstate_wasm.js"></script>
+<script>
+const SVG = 'http://www.w3.org/2000/svg';
+const PACKET_COLORS = {1: '#64748b', 2: '#6ea8ff', 3: '#6ea8ff', 4: '#fbbf24', 5: '#4ade80'};
+const TYPE_NAMES = {1: 'digits', 2: 'gesture', 3: 'gesture (landmarks)', 4: 'gaze'};
+const letter = i => String.fromCharCode(65 + i);
+const $ = id => document.getElementById(id);
+
+let M, api, hubs = 6, selected = 0, playing = true, speed = 1, lastFrame = 0, lastSlowUpdate = 0;
+let packetBuffer, radioBuffer, eventBuffer, storyRunning = false;
+const packetPool = [];
+
+function el(name, attrs, parent) {
+  const node = document.createElementNS(SVG, name);
+  for (const key in attrs) node.setAttribute(key, attrs[key]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+function hubPosition(i) {
+  const angle = -Math.PI / 2 + (2 * Math.PI * i) / hubs;
+  return [400 + 225 * Math.cos(angle), 295 + 225 * Math.sin(angle)];
+}
+
+// Same digest -> same color, so identical hubs look identical. Hues 140-330 only (green to
+// purple), so a hub is never red: red is reserved for problems.
+function digestColor(digest) {
+  const hue = 140 + ((digest >>> 0) % 190);
+  return `hsl(${hue} 60% 55%)`;
+}
+
+function buildScene() {
+  const links = $('links'), hubLayer = $('hubs');
+  links.innerHTML = '';
+  hubLayer.innerHTML = '';
+  for (let a = 0; a < hubs; a++) {
+    for (let b = a + 1; b < hubs; b++) {
+      const [x1, y1] = hubPosition(a), [x2, y2] = hubPosition(b);
+      const group = el('g', {'data-a': a, 'data-b': b, style: 'cursor:pointer'}, links);
+      el('line', {x1, y1, x2, y2, class: 'link-line', 'stroke-width': 1.5}, group);
+      el('line', {x1, y1, x2, y2, stroke: 'transparent', 'stroke-width': 14}, group);  // easier to click
+      group.addEventListener('click', () => {
+        api.set_link(a, b, api.link(a, b) ? 0 : 1);
+        narrate(api.link(a, b) ? `Link ${letter(a)}–${letter(b)} restored.` : `Link ${letter(a)}–${letter(b)} cut.`);
+        updateLinks();
+      });
+    }
+  }
+  for (let i = 0; i < hubs; i++) {
+    const [x, y] = hubPosition(i);
+    const group = el('g', {style: 'cursor:pointer'}, hubLayer);
+    el('circle', {cx: x, cy: y, r: 44, fill: 'none', stroke: '#6ea8ff', 'stroke-width': 2, opacity: 0, class: 'sync-ring'}, group);
+    el('circle', {cx: x, cy: y, r: 34, class: 'hub-body', 'stroke-width': 3}, group);
+    el('text', {x, y: y + 7, 'text-anchor': 'middle', 'font-size': 22, 'font-weight': 700, fill: '#0b1020'}, group).textContent = letter(i);
+    el('text', {x, y: y + 54, 'text-anchor': 'middle', 'font-size': 12, fill: '#8a96b2', class: 'hub-info'}, group);
+    el('text', {x, y: y - 46, 'text-anchor': 'middle', 'font-size': 12, fill: '#fbbf24', class: 'hub-person'}, group);
+    group.addEventListener('click', () => { selected = i; updateSelected(); updateHubs(); });
+  }
+  updateLinks();
+  updateHubs();
+  updateSelected();
+}
+
+function updateLinks() {
+  for (const group of $('links').children) {
+    const on = api.link(+group.dataset.a, +group.dataset.b);
+    const line = group.firstChild;
+    line.setAttribute('stroke', on ? '#24304d' : '#f87171');
+    line.setAttribute('stroke-dasharray', on ? '' : '6 6');
+    line.setAttribute('opacity', on ? 1 : 0.65);
+  }
+}
+
+function updateHubs() {
+  const groups = $('hubs').children;
+  for (let i = 0; i < hubs; i++) {
+    const group = groups[i];
+    group.querySelector('.hub-body').setAttribute('fill', digestColor(api.digest(i)));
+    group.querySelector('.hub-body').setAttribute('stroke', i === selected ? '#e6ebf5' : '#121a2e');
+    group.querySelector('.sync-ring').setAttribute('opacity', api.syncing(i) ? 0.55 : 0);
+    group.querySelector('.hub-info').textContent = `${api.slots(i)} slots · ${api.samples(i)} samples`;
+    const person = api.user(i);
+    group.querySelector('.hub-person').textContent = person ? `● person ${person} calibrating` : '';
+  }
+}
+
+function updateSelected() {
+  $('hub-title').textContent = `Hub ${letter(selected)}`;
+  const person = api.user(selected);
+  $('h-person').textContent = person ? `person ${person} (calibrating)` : 'nobody';
+  $('h-slots').textContent = api.slots(selected);
+  $('h-samples').textContent = api.samples(selected);
+  $('h-tombs').textContent = api.tombstones(selected);
+  $('h-users').textContent = api.deleted_users(selected);
+  $('h-digest').textContent = (api.digest(selected) >>> 0).toString(16).padStart(8, '0');
+  $('calibrate').textContent = person ? 'Person leaves' : 'Start calibrating';
+  $('delete-person').disabled = api.user(selected) === 0 && !lastPersonAt[selected];
+}
+
+function updatePackets() {
+  const count = api.packets(packetBuffer, 2000);
+  const heap = M.HEAP32, base = packetBuffer >> 2, now = api.now();
+  const layer = $('packets');
+  for (let i = 0; i < count; i++) {
+    const from = heap[base + i * 5], to = heap[base + i * 5 + 1], type = heap[base + i * 5 + 2];
+    const sent = heap[base + i * 5 + 3], deliver = heap[base + i * 5 + 4];
+    if (from >= hubs || to >= hubs) continue;
+    const t = Math.min(1, Math.max(0, (now - sent) / Math.max(1, deliver - sent)));
+    const [x1, y1] = hubPosition(from), [x2, y2] = hubPosition(to);
+    let dot = packetPool[i];
+    if (!dot) { dot = el('circle', {r: 3.5}, layer); packetPool[i] = dot; }
+    dot.setAttribute('cx', x1 + (x2 - x1) * t);
+    dot.setAttribute('cy', y1 + (y2 - y1) * t);
+    dot.setAttribute('fill', PACKET_COLORS[type] || '#64748b');
+    dot.setAttribute('opacity', api.link(from, to) ? 0.95 : 0.25);  // on a cut link: will be lost
+    dot.style.display = '';
+  }
+  for (let i = count; i < packetPool.length; i++) packetPool[i].style.display = 'none';
+}
+
+function updateMetrics() {
+  api.radio(radioBuffer);
+  const r = M.HEAP32.subarray(radioBuffer >> 2, (radioBuffer >> 2) + 6);
+  $('m-time').textContent = (api.now() / 1000).toFixed(1) + ' s';
+  $('m-sent').textContent = r[0];
+  $('m-dropped').textContent = r[2];
+  $('m-blocked').textContent = r[3];
+  $('m-corrupted').textContent = r[5];
+
+  const converged = api.converged();
+  const pill = $('state-pill');
+  pill.className = 'pill ' + (converged ? 'ok' : 'warn');
+  pill.innerHTML = converged ? 'state: <b>all hubs identical</b>' : 'state: <b>hubs differ</b>';
+  // Before the hubs agree, deleted data can still sit on hubs the deletion hasn't reached.
+  // Only once they agree does a leftover copy mean the deletion failed.
+  const leftover = api.resurrected();
+  const pillLeft = $('resurrect-pill');
+  if (converged) {
+    pillLeft.className = 'pill ' + (leftover === 0 ? 'ok' : 'bad');
+    pillLeft.innerHTML = `deleted data that came back: <b>${leftover}</b>`;
+  } else {
+    pillLeft.className = 'pill' + (leftover ? ' warn' : '');
+    pillLeft.innerHTML = `deleted data on hubs not reached yet: <b>${leftover}</b>`;
+  }
+  const lost = api.lost();
+  const pillLost = $('lost-pill');
+  if (converged) {
+    pillLost.className = 'pill ' + (lost === 0 ? 'ok' : 'bad');
+    pillLost.innerHTML = `deleted by mistake: <b>${lost}</b>`;
+  } else {
+    pillLost.className = 'pill';
+    pillLost.innerHTML = `data still spreading: <b>${lost}</b>`;
+  }
+  updateEvents();
+}
+
+function describeEvent(hub, kind, id) {
+  const who = letter(hub);
+  if (kind === 2) return `${who} learned person ${id}'s data was deleted`;
+  const device = id >>> 24, type = (id >>> 16) & 255, session = id & 0xffff;
+  if (kind === 1) return `${who} got a tombstone for ${letter(device)}'s ${TYPE_NAMES[type] || 'slot'} #${session}`;
+  return `${who} received ${letter(device)}'s ${TYPE_NAMES[type] || 'slot'} #${session}`;
+}
+
+let shownEvents = -1;
+function updateEvents() {
+  const total = api.event_count();
+  if (total === shownEvents) return;
+  shownEvents = total;
+  const items = [];
+  for (let i = 0; i < Math.min(total, 10); i++) {
+    api.event(i, eventBuffer);
+    const e = M.HEAP32.subarray(eventBuffer >> 2, (eventBuffer >> 2) + 4);
+    items.push(`<li>${(e[0] / 1000).toFixed(1)} s · ${describeEvent(e[1], e[2], e[3])}</li>`);
+  }
+  $('events').innerHTML = items.length ? items.join('') : '<li>none yet</li>';
+}
+
+function narrate(html) { $('narration').innerHTML = html; }
+
+function frame(time) {
+  const elapsed = Math.min(100, time - (lastFrame || time));
+  lastFrame = time;
+  if (playing) api.step(Math.round(elapsed * speed));
+  updatePackets();
+  updateHubs();
+  if (time - lastSlowUpdate > 250) {  // the full consistency check is heavier: 4 times a second
+    lastSlowUpdate = time;
+    updateMetrics();
+    updateSelected();
+  }
+  requestAnimationFrame(frame);
+}
+
+// --- controls ---
+const lastPersonAt = {};
+function reset() {
+  hubs = +$('hub-count').value;
+  api.reset(Math.floor(Math.random() * 1e6), hubs);
+  applyFaults();
+  selected = 0;
+  for (const key in lastPersonAt) delete lastPersonAt[key];
+  shownEvents = -1;
+  buildScene();
+  narrate('Click a hub to select it. Click a line to cut or restore that link.');
+}
+
+function applyFaults() {
+  for (const id of ['drop', 'dup', 'corrupt']) $(id + '-v').textContent = $(id).value + '%';
+  api.set_faults(+$('drop').value, +$('dup').value, +$('corrupt').value);
+}
+
+function wireControls() {
+  $('play').onclick = () => { playing = !playing; $('play').textContent = playing ? 'Pause' : 'Play'; };
+  $('speed').onchange = () => { speed = +$('speed').value; };
+  $('reset').onclick = reset;
+  for (const id of ['drop', 'dup', 'corrupt']) $(id).oninput = applyFaults;
+  $('heal').onclick = () => { api.heal(); updateLinks(); narrate('All links restored.'); };
+  $('split').onclick = () => { api.split(); updateLinks(); narrate('Split into two groups that can’t hear each other. Both keep working.'); };
+  $('line').onclick = () => { api.line(); updateLinks(); narrate('Each hub now only hears its neighbors. Middle hubs relay everything.'); };
+  $('calibrate').onclick = () => {
+    const on = api.user(selected) === 0;
+    api.calibrate(selected, on ? 1 : 0);
+    if (on) lastPersonAt[selected] = api.user(selected);
+    narrate(on ? `Person ${api.user(selected)} starts calibrating at ${letter(selected)}.` : `The person at ${letter(selected)} leaves. Their sessions are saved and keep syncing.`);
+  };
+  $('isolate').onclick = () => { api.isolate(selected); updateLinks(); narrate(`Hub ${letter(selected)} is cut off from everyone.`); };
+  $('reboot').onclick = () => { api.reboot(selected); narrate(`Power cut at ${letter(selected)}. It reloads its saved state; samples since the last save are gone, and nobody had seen them.`); };
+  $('delete-person').onclick = () => {
+    const person = api.delete_person(selected, selected);
+    if (person) narrate(`Person ${person} deleted their data at ${letter(selected)}. Watch the deletion spread.`);
+  };
+  $('delete-slot').onclick = () => {
+    narrate(api.delete_slot(selected) ? `One slot deleted at ${letter(selected)} (tombstone).` : `${letter(selected)} has no slots to delete.`);
+  };
+  $('story').onclick = playStory;
+}
+
+// --- the story: deletion while a hub is offline ---
+function waitSim(ms) {
+  const target = api.now() + ms;
+  return new Promise(resolve => {
+    const check = () => (api.now() >= target ? resolve() : setTimeout(check, 50));
+    check();
+  });
+}
+function waitUntil(test, timeoutMs) {
+  const deadline = api.now() + timeoutMs;
+  return new Promise(resolve => {
+    const check = () => (test() || api.now() >= deadline ? resolve(test()) : setTimeout(check, 100));
+    check();
+  });
+}
+
+async function playStory() {
+  if (storyRunning) return;
+  storyRunning = true;
+  $('story').disabled = true;
+  if (!playing) $('play').click();
+  api.heal();
+  updateLinks();
+  const offline = 0, other = Math.floor(hubs / 2);
+  selected = offline;
+  api.calibrate(offline, 1);
+  const person = api.user(offline);
+  lastPersonAt[offline] = person;
+  narrate(`<strong>1.</strong> Person ${person} starts calibrating at hub ${letter(offline)}. Their slots spread to every hub…`);
+  const spread = () => { for (let i = 0; i < hubs; i++) if (api.slots(i) < 2) return false; return true; };
+  await waitUntil(spread, 30000);
+  await waitSim(2000);
+
+  api.isolate(offline);
+  updateLinks();
+  narrate(`<strong>2.</strong> Hub ${letter(offline)} is cut off. Person ${person} is still calibrating there.`);
+  await waitSim(3000);
+
+  api.delete_person(offline, other);
+  narrate(`<strong>3.</strong> Person ${person} presses <em>delete my data</em> at hub ${letter(other)}. The deletion spreads to every hub it can reach. ${letter(offline)} can’t hear it and keeps recording.`);
+  await waitSim(8000);
+
+  api.heal();
+  updateLinks();
+  narrate(`<strong>4.</strong> The network heals. ${letter(offline)} learns about the deletion…`);
+  const ok = await waitUntil(() => api.converged(), 60000);
+  const back = api.resurrected();
+  narrate(ok && back === 0
+    ? `<strong>5.</strong> All hubs identical. Nothing of person ${person} survives anywhere: not the old data, and not what ${letter(offline)} recorded after the deletion. Deleted data that came back: <strong>0</strong>.`
+    : `<strong>5.</strong> Not converged yet (or ${back} deleted slots exist). Give it a few more seconds.`);
+  storyRunning = false;
+  $('story').disabled = false;
+}
+
+createMeshstate().then(module => {
+  M = module;
+  const f = (name, ret, args) => M.cwrap('pg_' + name, ret, args);
+  api = {
+    reset: f('reset', null, ['number', 'number']), step: f('step', null, ['number']),
+    set_faults: f('set_faults', null, ['number', 'number', 'number']),
+    set_link: f('set_link', null, ['number', 'number', 'number']), link: f('link', 'number', ['number', 'number']),
+    heal: f('heal', null, []), line: f('line', null, []), split: f('split', null, []), isolate: f('isolate', null, ['number']),
+    calibrate: f('calibrate', null, ['number', 'number']), delete_person: f('delete_person', 'number', ['number', 'number']),
+    delete_slot: f('delete_slot', 'number', ['number']), reboot: f('reboot', null, ['number']),
+    now: f('now', 'number', []), digest: f('digest', 'number', ['number']), slots: f('slots', 'number', ['number']),
+    tombstones: f('tombstones', 'number', ['number']), deleted_users: f('deleted_users', 'number', ['number']),
+    user: f('user', 'number', ['number']), samples: f('samples', 'number', ['number']), syncing: f('syncing', 'number', ['number']),
+    converged: f('converged', 'number', []), resurrected: f('resurrected', 'number', []), lost: f('lost', 'number', []),
+    radio: f('radio', null, ['number']), packets: f('packets', 'number', ['number', 'number']),
+    event_count: f('event_count', 'number', []), event: f('event', null, ['number', 'number']),
+  };
+  packetBuffer = M._malloc(2000 * 5 * 4);
+  radioBuffer = M._malloc(6 * 4);
+  eventBuffer = M._malloc(4 * 4);
+  wireControls();
+  reset();
+  requestAnimationFrame(frame);
+}).catch(() => { $('error').style.display = 'block'; });
+if (typeof createMeshstate === 'undefined') $('error').style.display = 'block';
+</script>
+</body>
+</html>

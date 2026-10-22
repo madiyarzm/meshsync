@@ -8,6 +8,7 @@ Offline federated learning over a mesh of ESP32 boards, synced with a CRDT over 
 firmware/        ESP32 sketch (opens in the Arduino IDE)
 firmware/src/meshstate/   portable library: mergeable slots, deletion, models, sync (C++17, no allocation)
 sim/sim.cpp      laptop simulator of the mesh with a faulty radio
+web/playground/  visual playground: open index.html (the library + simulator as WebAssembly)
 test/            C++ tests for the core, including a golden test against the Python prototype
 experiments/     Python prototype and Phase 1 experiments
 ```
@@ -31,7 +32,16 @@ on Python 3.10-3.14 (for example `uv tool install platformio --python 3.13`).
 pio test -e native                      # C++ unit and golden tests
 pio run -e native                       # build the simulator (rebuild after pio test)
 .pio/build/native/program               # one simulated run (seed 1, 6 hubs)
-.pio/build/native/program --seeds 100   # automated sync test: all runs must converge
+.pio/build/native/program --seeds 500   # automated test: converge, no resurrection, nothing lost
+.pio/build/native/program --capacity 50 # more people than the store holds
+.pio/build/native/program --hops 50     # relay timing along a chain of hubs
+```
+
+## Visual playground
+
+```
+python3 -m http.server 8000 -d web/playground   # then open http://localhost:8000
+web/playground/build.sh                          # rebuild after changing the library (needs Emscripten)
 ```
 
 ## Python prototype
