@@ -1,7 +1,8 @@
 // construct hub firmware for the ESP32.
 // Digit demo (APP_DIGITS): access point + drawing web page, ESP-NOW sync, flash persistence.
 // Set BOARD_LETTER in config.h before flashing each board.
-// Serial (115200): send "BENCH" to measure merge and predict times on this board.
+// Serial (115200): send "BENCH" to measure merge and predict times on this board
+// (the board restarts and runs it before Wi-Fi starts, when memory is unfragmented).
 //
 // Arduino IDE: open this file, board "ESP32 Dev Module" (esp32 core 3.x), Upload.
 // PlatformIO:  pio run -e esp32dev -t upload
@@ -296,8 +297,12 @@ static void handle_status() {
 
 // ======================================================================================
 // Benchmark: send "BENCH" over serial. Uses a separate replica in RAM, so it never touches
-// this board's real state.
+// this board's real state. Once Wi-Fi runs, the largest free block is smaller than a replica,
+// so the board restarts and runs the benchmark first thing in setup().
 // ======================================================================================
+
+RTC_NOINIT_ATTR uint32_t bench_request;  // survives a software restart
+const uint32_t BENCH_MAGIC = 0xBE7C4001;
 
 static uint32_t bench_value = 12345;
 static int32_t bench_random(int32_t low, int32_t high) {
@@ -445,7 +450,10 @@ static void handle_serial() {
         if (c == '\n' || c == '\r') {
             line[length] = '\0';
             if (std::strcmp(line, "BENCH") == 0) {
-                run_benchmark();
+                Serial.println("# restarting to run BENCH with unfragmented memory");
+                Serial.flush();
+                bench_request = BENCH_MAGIC;
+                ESP.restart();
             }
             length = 0;
         } else if (length < sizeof(line) - 1) {
@@ -461,6 +469,12 @@ static void handle_serial() {
 void setup() {
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
+
+    if (bench_request == BENCH_MAGIC) {
+        bench_request = 0;
+        store.begin();
+        run_benchmark();
+    }
 
     replica = new (std::nothrow) Replica();
     sync_engine = new (std::nothrow) SyncEngine();
@@ -508,6 +522,8 @@ void setup() {
 
     Serial.printf("# room %c ready: join Wi-Fi \"%s\" and open http://%s\n", BOARD_LETTER, wifi_name,
                   WiFi.softAPIP().toString().c_str());
+    Serial.printf("# heap while running: free=%u largest_block=%u\n", unsigned(ESP.getFreeHeap()),
+                  unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 }
 
 void loop() {
