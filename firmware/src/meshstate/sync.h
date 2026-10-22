@@ -39,8 +39,13 @@ struct InventoryRequestPacket {
 };
 constexpr size_t INVENTORY_REQUEST_BYTES = 5;
 
+// [magic][type][sender][page][pages][count] + entries + CRC32 of everything before it.
+// The CRC matters: entries are applied directly (a tombstone deletes data), so one corrupted
+// byte must never turn into a deletion. Other packets are covered by the slot CRC or are harmless.
 constexpr size_t INVENTORY_HEADER_BYTES = 6;
-constexpr int ENTRIES_PER_PAGE = int((MAX_PACKET_BYTES - INVENTORY_HEADER_BYTES) / INVENTORY_ENTRY_BYTES);  // 27
+constexpr size_t INVENTORY_CRC_BYTES = 4;
+constexpr int ENTRIES_PER_PAGE =
+    int((MAX_PACKET_BYTES - INVENTORY_HEADER_BYTES - INVENTORY_CRC_BYTES) / INVENTORY_ENTRY_BYTES);  // 26
 
 struct InventoryPacket {
     uint8_t sender;

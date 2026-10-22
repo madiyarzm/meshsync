@@ -84,8 +84,11 @@ void test_crc_and_packets() {
     TEST_ASSERT_TRUE(length <= MAX_PACKET_BYTES);
     static InventoryPacket page_back;
     TEST_ASSERT_TRUE(read_inventory(packet, length, page_back));
-    TEST_ASSERT_EQUAL_UINT32(26 * 7, page_back.entries[26].value);
+    TEST_ASSERT_EQUAL_UINT32((ENTRIES_PER_PAGE - 1) * 7, page_back.entries[ENTRIES_PER_PAGE - 1].value);
     TEST_ASSERT_FALSE(read_inventory(packet, length - 1, page_back));  // truncated
+    packet[20] ^= 0x01;  // one flipped bit inside an entry: could turn a slot into a tombstone
+    TEST_ASSERT_FALSE(read_inventory(packet, length, page_back));     // so the CRC rejects the page
+    packet[20] ^= 0x01;
 
     uint8_t data[MAX_CHUNK_DATA];
     for (size_t i = 0; i < sizeof(data); i++) {

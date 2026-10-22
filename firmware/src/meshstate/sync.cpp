@@ -76,10 +76,11 @@ bool read_inventory_request(const uint8_t* data, size_t length, InventoryRequest
 }
 
 size_t write_inventory(const InventoryPacket& packet, uint8_t* out, size_t capacity) {
-    size_t size = INVENTORY_HEADER_BYTES + size_t(packet.count) * INVENTORY_ENTRY_BYTES;
+    size_t size = INVENTORY_HEADER_BYTES + size_t(packet.count) * INVENTORY_ENTRY_BYTES + INVENTORY_CRC_BYTES;
     if (out == nullptr || capacity < size || packet.count > ENTRIES_PER_PAGE || !valid_id(packet.sender)) {
         return 0;
     }
+    const uint8_t* packet_start = out;
     write_packet_header(out, PacketType::Inventory, packet.sender);
     write_u8(out, packet.page);
     write_u8(out, packet.pages);
@@ -89,6 +90,7 @@ size_t write_inventory(const InventoryPacket& packet, uint8_t* out, size_t capac
         write_u32(out, packet.entries[i].id);
         write_u32(out, packet.entries[i].value);
     }
+    write_u32(out, crc32(packet_start, size - INVENTORY_CRC_BYTES));
     return size;
 }
 
@@ -101,8 +103,12 @@ bool read_inventory(const uint8_t* data, size_t length, InventoryPacket& out) {
     out.pages = data[4];
     out.count = data[5];
     if (out.count > ENTRIES_PER_PAGE || out.pages == 0 || out.page >= out.pages ||
-        length != INVENTORY_HEADER_BYTES + size_t(out.count) * INVENTORY_ENTRY_BYTES) {
+        length != INVENTORY_HEADER_BYTES + size_t(out.count) * INVENTORY_ENTRY_BYTES + INVENTORY_CRC_BYTES) {
         return false;
+    }
+    const uint8_t* crc_field = data + length - INVENTORY_CRC_BYTES;
+    if (read_u32(crc_field) != crc32(data, length - INVENTORY_CRC_BYTES)) {
+        return false;  // damaged on the way: drop the whole page
     }
     const uint8_t* in = data + INVENTORY_HEADER_BYTES;
     for (int i = 0; i < out.count; i++) {

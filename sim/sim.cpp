@@ -73,13 +73,21 @@ public:
     void set_groups(const int group_of_hub[]);
     void set_line();
     void heal();
+    void set_link(int a, int b, bool on);
+    bool link(int a, int b) const { return link_[a][b]; }
+    void set_faults(const FaultConfig& faults) { faults_ = faults; }
+    void reboot(int hub);  // power cut: unsaved samples are lost, saved state reloads
     void advance(uint32_t duration_ms);
 
     // People calibrating: one random sample for whoever sits at this hub (a new user if nobody).
     void teach_random(int hub);
+    // If a person's data is deleted while they sit at a hub, seat a new person right away
+    // (keeps the automated runs busy). The playground turns this off.
+    bool reseat_after_delete = true;
     void finish_user(int hub);  // that person leaves; their sessions are closed (saved)
     void finish_everyone();
     uint16_t user_at(int hub) const { return calibration_[hub].active ? calibration_[hub].user : 0; }
+    uint16_t last_user_at(int hub) const { return calibration_[hub].user; }
 
     // Deletions, recorded in the world's own ground truth (not trusted from the hubs).
     bool delete_random_slot(int hub);
@@ -88,6 +96,8 @@ public:
     bool converged();
     // Number of slots, on any hub, that the ground truth says must be gone.
     int resurrected_slots();
+    // Number of (hub, slot) pairs missing although nobody deleted the slot: wrongly lost data.
+    int wrongly_lost_slots();
     bool totals_consistent();  // every hub's running totals equal a fresh recount
 
     uint32_t now_ms() const { return now_ms_; }
@@ -98,12 +108,32 @@ public:
     int num_hubs() const { return num_hubs_; }
     uint16_t users_created() const { return uint16_t(next_user_ - 1); }
 
+    // For the visual playground: packets in the air, and recent sync events.
+    struct PacketView {
+        uint8_t from;
+        uint8_t to;
+        uint8_t type;
+        uint32_t sent_ms;
+        uint32_t deliver_ms;
+    };
+    int packets_in_flight(PacketView* out, int capacity) const;
+    struct EventView {
+        uint32_t time_ms;
+        uint8_t hub;
+        uint8_t kind;  // SyncEvent
+        uint32_t id;
+    };
+    static constexpr int EVENT_LOG = 64;
+    int event_count() const { return event_count_; }
+    const EventView& event(int i) const { return events_[(event_count_ - 1 - i) % EVENT_LOG]; }  // 0 = newest
+
 private:
     struct InFlight {
         bool used;
         uint8_t to;
         uint8_t from;
         uint8_t length;
+        uint32_t sent_at_ms;
         uint32_t deliver_at_ms;
         uint8_t data[MAX_PACKET_BYTES];
     };
@@ -120,6 +150,7 @@ private:
     static constexpr int MAX_IN_FLIGHT = 8192;
 
     static void send_from_hub(void* context, const uint8_t* data, size_t length);
+    static void on_event(void* context, SyncEvent event, uint32_t id);
     void broadcast(int from, const uint8_t* data, size_t length);
     void queue_packet(int from, int to, const uint8_t* data, size_t length);
     void deliver_due_packets();
@@ -139,6 +170,14 @@ private:
     uint32_t deleted_keys_[MAX_TOMBSTONES] = {};
     int deleted_key_count_ = 0;
     uint32_t deleted_epoch_[MAX_TRACKED_USERS] = {};
+    // Ground truth of every slot that ever got a sample, with its user and creation counter.
+    static constexpr int MAX_CREATED = 512;
+    SlotHeader created_[MAX_CREATED] = {};
+    int created_count_ = 0;
+    void record_created(const Replica& replica, SlotKey key);
+
+    EventView events_[EVENT_LOG] = {};
+    int event_count_ = 0;
 
     MemoryStore<MAX_SLOTS> stores_[MAX_DEVICES];
     Replica replicas_[MAX_DEVICES];
@@ -159,6 +198,8 @@ bool World::reset(uint64_t seed, int num_hubs, const FaultConfig& faults) {
     random_.seed(seed);
     radio_ = {};
     deleted_key_count_ = 0;
+    created_count_ = 0;
+    event_count_ = 0;
     for (int u = 0; u < MAX_TRACKED_USERS; u++) {
         deleted_epoch_[u] = 0;
     }
@@ -170,10 +211,45 @@ bool World::reset(uint64_t seed, int num_hubs, const FaultConfig& faults) {
         stores_[hub].wipe();
         replicas_[hub].begin(uint8_t(hub), &stores_[hub]);
         contexts_[hub] = {this, hub};
-        engines_[hub].begin(&replicas_[hub], SIM_APP, &World::send_from_hub, nullptr, &contexts_[hub], now_ms_);
+        engines_[hub].begin(&replicas_[hub], SIM_APP, &World::send_from_hub, &World::on_event, &contexts_[hub],
+                            now_ms_);
     }
     heal();
     return true;
+}
+
+void World::set_link(int a, int b, bool on) {
+    if (a >= 0 && b >= 0 && a < num_hubs_ && b < num_hubs_ && a != b) {
+        link_[a][b] = on;
+        link_[b][a] = on;
+    }
+}
+
+void World::reboot(int hub) {
+    if (hub < 0 || hub >= num_hubs_) {
+        return;
+    }
+    calibration_[hub].active = false;  // the open sessions were in RAM
+    replicas_[hub].begin(uint8_t(hub), &stores_[hub]);
+    engines_[hub].begin(&replicas_[hub], SIM_APP, &World::send_from_hub, &World::on_event, &contexts_[hub], now_ms_);
+}
+
+void World::on_event(void* context, SyncEvent event, uint32_t id) {
+    HubContext* hub = static_cast<HubContext*>(context);
+    World* world = hub->world;
+    world->events_[world->event_count_ % EVENT_LOG] = {world->now_ms_, uint8_t(hub->hub), uint8_t(event), id};
+    world->event_count_++;
+}
+
+int World::packets_in_flight(PacketView* out, int capacity) const {
+    int count = 0;
+    for (int i = 0; i < MAX_IN_FLIGHT && count < capacity; i++) {
+        const InFlight& packet = in_flight_[i];
+        if (packet.used) {
+            out[count++] = {packet.from, packet.to, packet.data[1], packet.sent_at_ms, packet.deliver_at_ms};
+        }
+    }
+    return count;
 }
 
 void World::set_groups(const int group_of_hub[]) {
@@ -234,6 +310,7 @@ void World::queue_packet(int from, int to, const uint8_t* data, size_t length) {
         packet.to = uint8_t(to);
         packet.length = uint8_t(length);
         uint32_t spread = faults_.max_delay_ms - faults_.min_delay_ms + 1;
+        packet.sent_at_ms = now_ms_;
         packet.deliver_at_ms = now_ms_ + faults_.min_delay_ms + random_.below(spread);
         std::memcpy(packet.data, data, length);
         if (random_.chance(faults_.corrupt_rate)) {
@@ -303,8 +380,17 @@ void World::teach_random(int hub) {
     }
     Result gesture = replica.add_gesture(calibration.gesture, int(random_.below(GESTURE_CLASSES)), features);
     Result gaze = replica.add_gaze(calibration.gaze, features, int32_t(random_.below(1001)), int32_t(random_.below(1001)));
+    if (gesture == Result::Ok) {
+        record_created(replica, calibration.gesture);
+    }
+    if (gaze == Result::Ok) {
+        record_created(replica, calibration.gaze);
+    }
     if (gesture == Result::UnknownSession && gaze == Result::UnknownSession) {
         calibration.active = false;  // this person's data was deleted while they sat here
+        if (reseat_after_delete) {
+            teach_random(hub);
+        }
     }
 }
 
@@ -321,6 +407,37 @@ void World::finish_everyone() {
     for (int hub = 0; hub < num_hubs_; hub++) {
         finish_user(hub);
     }
+}
+
+void World::record_created(const Replica& replica, SlotKey key) {
+    for (int i = 0; i < created_count_; i++) {
+        if (created_[i].key == key) {
+            return;
+        }
+    }
+    if (created_count_ < MAX_CREATED) {
+        SlotHeader header = {};
+        header.key = key;
+        header.user = calibration_[key.device].user;
+        header.user_epoch = replica.user_epoch(header.user);  // what the slot was created with
+        created_[created_count_++] = header;
+    }
+}
+
+int World::wrongly_lost_slots() {
+    int lost = 0;
+    for (int i = 0; i < created_count_; i++) {
+        if (truly_dead(created_[i])) {
+            continue;  // deleted on purpose
+        }
+        for (int hub = 0; hub < num_hubs_; hub++) {
+            SlotHeader header;
+            if (!replicas_[hub].find_slot(created_[i].key.packed(), header)) {
+                lost++;
+            }
+        }
+    }
+    return lost;
 }
 
 bool World::delete_random_slot(int hub) {
@@ -403,6 +520,7 @@ bool World::converged() {
 struct ScenarioResult {
     bool converged;
     int resurrected;  // must be 0
+    int wrongly_lost;  // must be 0
     bool offline_case_tested;
     uint32_t heal_ms;
     uint32_t converge_ms;  // time from heal until all hubs were identical
@@ -507,6 +625,7 @@ ScenarioResult run_scenario(World& world, uint64_t seed, int num_hubs, const Fau
         }
     }
     result.resurrected = world.resurrected_slots();
+    result.wrongly_lost = world.wrongly_lost_slots();
     result.slots = world.replica(0).slot_count();
     result.tombstones = world.replica(0).tombstone_count();
     return result;
@@ -659,8 +778,8 @@ BroadcastResult run_broadcast(World& world, int num_hubs) {
 
 }  // namespace sim
 
-// Not built into the unit tests, which have their own main().
-#ifndef PIO_UNIT_TESTING
+// Not built into the unit tests or the playground, which have their own entry points.
+#if !defined(PIO_UNIT_TESTING) && !defined(SIM_NO_MAIN)
 
 static sim::World world;  // tens of MB: too big for the stack
 
@@ -685,6 +804,7 @@ static void print_run(const sim::ScenarioResult& result, int num_hubs) {
                     unsigned(stats.slots_applied), unsigned(stats.crc_failures), unsigned(stats.transfers_abandoned));
     }
     std::printf("\nslots that should be deleted but exist somewhere: %d\n", result.resurrected);
+    std::printf("slots missing although nobody deleted them: %d\n", result.wrongly_lost);
     if (result.converged) {
         std::printf("CONVERGED %.1f s after healing: all %d hubs identical (%d slots, %d tombstones)\n",
                     result.converge_ms / 1000.0, num_hubs, result.slots, result.tombstones);
@@ -696,6 +816,7 @@ static void print_run(const sim::ScenarioResult& result, int num_hubs) {
 static int run_seeds(int seeds) {
     int converged = 0;
     int clean = 0;
+    int nothing_lost = 0;
     int offline_cases = 0;
     int slot_deletions = 0;
     int user_deletions = 0;
@@ -706,17 +827,23 @@ static int run_seeds(int seeds) {
         slot_deletions += result.slot_deletions;
         user_deletions += result.user_deletions;
         offline_cases += result.offline_case_tested ? 1 : 0;
+        if (!result.offline_case_tested && std::getenv("SIM_DEBUG")) {
+            std::printf("seed %d: hard case not tested\n", seed);
+        }
         if (result.resurrected == 0) {
             clean++;
+        }
+        if (result.wrongly_lost == 0) {
+            nothing_lost++;
         }
         if (result.converged) {
             converged++;
             total_ms += result.converge_ms;
             slowest_ms = result.converge_ms > slowest_ms ? result.converge_ms : slowest_ms;
         }
-        if (!result.converged || result.resurrected != 0) {
-            std::printf("seed %d FAILED: converged=%d resurrected=%d (replay: program %d 6)\n", seed,
-                        result.converged ? 1 : 0, result.resurrected, seed);
+        if (!result.converged || result.resurrected != 0 || result.wrongly_lost != 0) {
+            std::printf("seed %d FAILED: converged=%d resurrected=%d wrongly_lost=%d (replay: program %d 6)\n", seed,
+                        result.converged ? 1 : 0, result.resurrected, result.wrongly_lost, seed);
         }
     }
     std::printf("%d seeds, 6 hubs, %d slot deletions and %d user deletions in total\n", seeds, slot_deletions,
@@ -724,8 +851,9 @@ static int run_seeds(int seeds) {
     std::printf("  converged:                      %d/%d (after healing: average %.1f s, slowest %.1f s)\n",
                 converged, seeds, converged ? total_ms / converged / 1000.0 : 0.0, slowest_ms / 1000.0);
     std::printf("  no deleted slot came back:      %d/%d\n", clean, seeds);
+    std::printf("  nothing deleted by mistake:     %d/%d\n", nothing_lost, seeds);
     std::printf("  offline-during-deletion tested: %d/%d\n", offline_cases, seeds);
-    return converged == seeds && clean == seeds ? 0 : 1;
+    return converged == seeds && clean == seeds && nothing_lost == seeds ? 0 : 1;
 }
 
 static int run_capacity_seeds(int seeds) {
@@ -809,7 +937,7 @@ int main(int argc, char** argv) {
                 FAULTS.corrupt_rate * 100, unsigned(FAULTS.min_delay_ms), unsigned(FAULTS.max_delay_ms));
     sim::ScenarioResult result = sim::run_scenario(world, seed, num_hubs, FAULTS, true);
     print_run(result, num_hubs);
-    return result.converged && result.resurrected == 0 ? 0 : 1;
+    return result.converged && result.resurrected == 0 && result.wrongly_lost == 0 ? 0 : 1;
 }
 
 #endif
