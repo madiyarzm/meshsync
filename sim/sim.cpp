@@ -127,6 +127,14 @@ public:
     int event_count() const { return event_count_; }
     const EventView& event(int i) const { return events_[(event_count_ - 1 - i) % EVENT_LOG]; }  // 0 = newest
 
+    // For the face page's simulated hub: sees every packet a hub sends (to = -1) and every
+    // packet that arrives (the mesh monitor on a real board hears the same).
+    using PacketObserver = void (*)(void* context, int from, int to, const uint8_t* data, size_t length);
+    void set_observer(PacketObserver observer, void* context) {
+        observer_ = observer;
+        observer_context_ = context;
+    }
+
 private:
     struct InFlight {
         bool used;
@@ -178,6 +186,8 @@ private:
 
     EventView events_[EVENT_LOG] = {};
     int event_count_ = 0;
+    PacketObserver observer_ = nullptr;
+    void* observer_context_ = nullptr;
 
     MemoryStore<MAX_SLOTS> stores_[MAX_DEVICES];
     Replica replicas_[MAX_DEVICES];
@@ -278,7 +288,11 @@ void World::heal() {
 
 void World::send_from_hub(void* context, const uint8_t* data, size_t length) {
     HubContext* hub = static_cast<HubContext*>(context);
-    hub->world->broadcast(hub->hub, data, length);
+    World* world = hub->world;
+    if (world->observer_ != nullptr) {
+        world->observer_(world->observer_context_, hub->hub, -1, data, length);
+    }
+    world->broadcast(hub->hub, data, length);
 }
 
 void World::broadcast(int from, const uint8_t* data, size_t length) {
@@ -335,6 +349,9 @@ void World::deliver_due_packets() {
             continue;
         }
         radio_.delivered++;
+        if (observer_ != nullptr) {
+            observer_(observer_context_, packet.from, packet.to, packet.data, packet.length);
+        }
         engines_[packet.to].on_packet(packet.data, packet.length, now_ms_);
     }
 }

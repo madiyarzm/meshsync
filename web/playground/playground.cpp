@@ -143,3 +143,117 @@ EMSCRIPTEN_KEEPALIVE void pg_event(int i, int* out) {
 }
 
 }  // extern "C"
+
+// ======================================================================================
+// Simulated hub for the face page (web/index.html), when no board is plugged in.
+// A separate world of hubs in a line (A - B - C ...), so A and C only meet through B.
+// The page talks to one of them with the same text protocol as over USB serial, through
+// the same FaceApp code the firmware runs. Moving the "cable" to another hub = hub_attach.
+// ======================================================================================
+
+#include "face_app.h"
+
+#include <emscripten.h>
+
+namespace {
+
+sim::World hub_world;
+sim::FaultConfig hub_faults = {0.10, 0.02, 0.005, 2, 20};
+FaceApp face_app;
+int attached = 0;
+int events_forwarded = 0;
+char hub_output_text[65536];
+size_t hub_output_length = 0;
+char hub_input[FACE_MAX_LINE + 2];
+
+void hub_write(void* context, const char* line) {
+    (void)context;
+    size_t length = std::strlen(line);
+    if (hub_output_length + length + 2 > sizeof(hub_output_text)) {
+        return;  // the page stopped reading; drop rather than overflow
+    }
+    std::memcpy(hub_output_text + hub_output_length, line, length);
+    hub_output_length += length;
+    hub_output_text[hub_output_length++] = '\n';
+    hub_output_text[hub_output_length] = '\0';
+}
+
+uint32_t hub_micros() {
+    return uint32_t(emscripten_get_now() * 1000.0);
+}
+
+void hub_observe(void* context, int from, int to, const uint8_t* data, size_t length) {
+    (void)context;
+    if (to == attached) {
+        face_app.on_radio_packet(data, length, 0, hub_world.now_ms());  // 0: no RSSI in the simulator
+    } else if (to < 0 && from == attached) {
+        face_app.on_radio_send(data, length);
+    }
+}
+
+}  // namespace
+
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE void hub_reset(int hubs, int seed) {
+    hub_world.reset(uint64_t(seed), hubs, hub_faults);
+    hub_world.set_line();
+    hub_world.set_observer(hub_observe, nullptr);
+    events_forwarded = hub_world.event_count();
+    attached = 0;
+    hub_output_length = 0;
+    face_app.begin('A', sim::SIM_APP, &hub_world.replica(0), &hub_world.engine(0), hub_write, hub_micros, nullptr);
+    face_app.boot();
+}
+
+// Like plugging the USB cable into another board: it answers with a BOOT line.
+EMSCRIPTEN_KEEPALIVE void hub_attach(int hub) {
+    if (hub < 0 || hub >= hub_world.num_hubs()) {
+        return;
+    }
+    attached = hub;
+    events_forwarded = hub_world.event_count();
+    face_app.begin(char('A' + hub), sim::SIM_APP, &hub_world.replica(hub), &hub_world.engine(hub), hub_write,
+                   hub_micros, nullptr);
+    face_app.boot();
+}
+
+EMSCRIPTEN_KEEPALIVE void hub_line(const char* line) {
+    std::snprintf(hub_input, sizeof(hub_input), "%s", line);
+    face_app.handle_line(hub_input, hub_world.now_ms());
+}
+
+EMSCRIPTEN_KEEPALIVE void hub_step(int ms) {
+    for (int done = 0; done < ms; done += int(sim::World::STEP_MS)) {
+        hub_world.advance(sim::World::STEP_MS);
+        // Sync events of the attached hub, oldest first (the log keeps the newest 64).
+        int fresh = hub_world.event_count() - events_forwarded;
+        if (fresh > sim::World::EVENT_LOG) {
+            fresh = sim::World::EVENT_LOG;
+        }
+        for (int i = fresh - 1; i >= 0; i--) {
+            const sim::World::EventView& event = hub_world.event(i);
+            if (event.hub == attached) {
+                face_app.on_sync_event(SyncEvent(event.kind), event.id);
+            }
+        }
+        events_forwarded = hub_world.event_count();
+        face_app.tick(hub_world.now_ms());
+    }
+}
+
+// Everything written since the last call, one line per '\n'.
+EMSCRIPTEN_KEEPALIVE const char* hub_output() {
+    static char copy[sizeof(hub_output_text)];
+    std::memcpy(copy, hub_output_text, hub_output_length + 1);
+    hub_output_length = 0;
+    hub_output_text[0] = '\0';
+    return copy;
+}
+
+EMSCRIPTEN_KEEPALIVE int hub_count() { return hub_world.num_hubs(); }
+EMSCRIPTEN_KEEPALIVE int hub_attached() { return attached; }
+EMSCRIPTEN_KEEPALIVE void hub_set_link(int a, int b, int on) { hub_world.set_link(a, b, on != 0); }
+EMSCRIPTEN_KEEPALIVE int hub_link(int a, int b) { return hub_world.link(a, b) ? 1 : 0; }
+
+}  // extern "C"
