@@ -1,5 +1,8 @@
-// construct hub firmware for the ESP32.
-// Digit demo (APP_DIGITS): access point + drawing web page, ESP-NOW sync, flash persistence.
+// construct hub firmware for the ESP32. Two apps, chosen with APP_MODE in config.h:
+//   APP_FACE   - webcam gestures + gaze: the browser page talks to this hub over USB serial
+//                (protocol in face_app.h); ESP-NOW sync; flash persistence. The mesh side runs
+//                on core 0, so syncing never holds up a live prediction on core 1.
+//   APP_DIGITS - the digit demo: access point + drawing web page, ESP-NOW sync, flash persistence.
 // Set BOARD_LETTER in config.h before flashing each board.
 // Serial (115200): send "BENCH" to measure merge and predict times on this board
 // (the board restarts and runs it before Wi-Fi starts, when memory is unfragmented).
@@ -9,12 +12,12 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <WebServer.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_now.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -26,7 +29,14 @@
 #include "src/meshstate/models.h"
 #include "src/meshstate/replica.h"
 #include "src/meshstate/sync.h"
+
+#if APP_MODE == APP_DIGITS
+#include <WebServer.h>
+
 #include "web_page.h"
+#else
+#include "face_app.h"
+#endif
 
 using namespace meshstate;
 
@@ -39,15 +49,17 @@ using namespace meshstate;
 FlashStore store;
 Replica* replica = nullptr;
 SyncEngine* sync_engine = nullptr;
+
+// Scratch for reading slots back (status page, benchmark): too big for the stack.
+uint8_t slot_buffer[MAX_ENCODED_SLOT_BYTES];
+AnyPayload slot_payload;
+
+#if APP_MODE == APP_DIGITS
 DigitModel model;
 bool model_dirty = true;
 uint32_t led_off_at_ms = 0;
 
 const SlotKey MY_DIGITS = {uint8_t(DEVICE_ID), uint8_t(PayloadType::Digits), 0};
-
-// Scratch for reading slots back (status page, benchmark): too big for the stack.
-uint8_t slot_buffer[MAX_ENCODED_SLOT_BYTES];
-AnyPayload slot_payload;
 
 static void refresh_model() {
     if (!model_dirty) {
@@ -56,6 +68,9 @@ static void refresh_model() {
     model.fit(replica->digits_totals(), DIGIT_VAR_FLOOR);
     model_dirty = false;
 }
+#else
+FaceApp face_app;
+#endif
 
 // ======================================================================================
 // Radio (ESP-NOW). Everything is broadcast; the sync protocol handles addressing and retries.
@@ -66,6 +81,7 @@ const int RADIO_QUEUE_LENGTH = 16;
 
 struct RadioPacket {
     uint8_t length;
+    int8_t rssi;  // signal strength in dBm, for the mesh monitor
     uint8_t data[MAX_PACKET_BYTES];
 };
 
@@ -78,21 +94,21 @@ uint32_t radio_send_failures = 0;
 
 // Runs in the Wi-Fi task, not in loop(): only copy the packet into the queue and return.
 static void on_radio_receive(const esp_now_recv_info_t* info, const uint8_t* data, int length) {
-    (void)info;
     if (data == nullptr || length <= 0 || length > int(MAX_PACKET_BYTES)) {
         radio_dropped = radio_dropped + 1;
         return;
     }
     RadioPacket packet;
     packet.length = uint8_t(length);
+    packet.rssi = (info != nullptr && info->rx_ctrl != nullptr) ? int8_t(info->rx_ctrl->rssi) : 0;
     std::memcpy(packet.data, data, size_t(length));
     if (xQueueSend(radio_queue, &packet, 0) != pdTRUE) {
         radio_dropped = radio_dropped + 1;
     }
 }
 
-// Call after the access point is up: ESP-NOW uses its interface and channel.
-static bool radio_begin() {
+// Call after Wi-Fi is up: ESP-NOW uses its interface (AP or STA) and channel.
+static bool radio_begin(wifi_interface_t interface) {
     radio_queue = xQueueCreateStatic(RADIO_QUEUE_LENGTH, sizeof(RadioPacket), radio_queue_storage,
                                      &radio_queue_control);
     if (radio_queue == nullptr || esp_now_init() != ESP_OK) {
@@ -103,7 +119,7 @@ static bool radio_begin() {
     esp_now_peer_info_t peer = {};
     std::memcpy(peer.peer_addr, BROADCAST_ADDRESS, sizeof(BROADCAST_ADDRESS));
     peer.channel = WIFI_CHANNEL;
-    peer.ifidx = WIFI_IF_AP;  // we run as an access point, so send on that interface
+    peer.ifidx = interface;
     peer.encrypt = false;
     return esp_now_add_peer(&peer) == ESP_OK;
 }
@@ -114,11 +130,17 @@ static void radio_send(void* context, const uint8_t* data, size_t length) {
     if (esp_now_send(BROADCAST_ADDRESS, data, length) != ESP_OK) {
         radio_send_failures++;
     }
+#if APP_MODE == APP_FACE
+    face_app.on_radio_send(data, length);
+#endif
 }
 
 // Matches SyncEngine::EventFunction.
 static void on_sync_event(void* context, SyncEvent event, uint32_t id) {
     (void)context;
+#if APP_MODE == APP_FACE
+    face_app.on_sync_event(event, id);
+#else
     model_dirty = true;
     SlotKey key = SlotKey::unpack(id);
     if (event == SyncEvent::SlotApplied) {
@@ -128,7 +150,10 @@ static void on_sync_event(void* context, SyncEvent event, uint32_t id) {
     } else {
         Serial.printf("# user %lu's data deleted\n", (unsigned long)id);
     }
+#endif
 }
+
+#if APP_MODE == APP_DIGITS
 
 // ======================================================================================
 // Web server (http://192.168.4.1)
@@ -294,6 +319,7 @@ static void handle_status() {
              sync_engine->syncing() ? "true" : "false");
     server.send(200, "application/json", json);
 }
+#endif  // APP_DIGITS
 
 // ======================================================================================
 // Benchmark: send "BENCH" over serial. Uses a separate replica in RAM, so it never touches
@@ -441,7 +467,161 @@ static void run_benchmark() {
     Serial.println("#BENCH done");
 }
 
-// Serial commands, one per line.
+static void restart_for_bench() {
+    Serial.println("# restarting to run BENCH with unfragmented memory");
+    Serial.flush();
+    bench_request = BENCH_MAGIC;
+    ESP.restart();
+}
+
+#if APP_MODE == APP_FACE
+// ======================================================================================
+// Face mode. Two sides share the hub state:
+//   browser side (loop(), core 1): serial requests, live predictions
+//   mesh side (mesh_task, core 0): radio packets, sync, saving to flash
+// state_lock guards the replica and sync engine. output_lock keeps lines from the two
+// sides from mixing on the serial port. Order is always state, then output.
+// ======================================================================================
+
+StaticSemaphore_t state_lock_memory;
+StaticSemaphore_t output_lock_memory;
+SemaphoreHandle_t state_lock = nullptr;
+SemaphoreHandle_t output_lock = nullptr;
+uint32_t last_save_ms = 0;
+
+// Matches FaceApp::WriteLine.
+static void serial_write_line(void* context, const char* line) {
+    (void)context;
+    xSemaphoreTake(output_lock, portMAX_DELAY);
+    Serial.write(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    Serial.write('\n');
+    xSemaphoreGive(output_lock);
+}
+
+static bool take_state(void* context, bool wait) {
+    (void)context;
+    return xSemaphoreTake(state_lock, wait ? portMAX_DELAY : 0) == pdTRUE;
+}
+
+static void give_state(void* context) {
+    (void)context;
+    xSemaphoreGive(state_lock);
+}
+
+static uint32_t micros_now() {
+    return micros();
+}
+
+// One round of the mesh side. Waits up to `wait` for a packet, so the task sleeps when idle.
+static void mesh_step(TickType_t wait) {
+    static RadioPacket packet;  // only one mesh side ever runs
+    bool have_packet = false;
+    if (radio_queue != nullptr) {
+        have_packet = xQueueReceive(radio_queue, &packet, wait) == pdTRUE;
+    } else if (wait > 0) {
+        vTaskDelay(wait);
+    }
+    uint32_t now = millis();
+    xSemaphoreTake(state_lock, portMAX_DELAY);
+    for (int handled = 0; have_packet && handled < 16; handled++) {  // bounded, then tick
+        face_app.on_radio_packet(packet.data, packet.length, packet.rssi, now);
+        sync_engine->on_packet(packet.data, packet.length, now);
+        have_packet = xQueueReceive(radio_queue, &packet, 0) == pdTRUE;
+    }
+    sync_engine->tick(now);
+    if (now - last_save_ms >= SAVE_INTERVAL_MS) {
+        replica->flush();  // open sessions: only saved versions are ever sent to other boards
+        last_save_ms = now;
+    }
+    face_app.tick(now);
+    xSemaphoreGive(state_lock);
+}
+
+static void mesh_task(void* parameter) {
+    (void)parameter;
+    while (true) {
+        mesh_step(pdMS_TO_TICKS(5));
+    }
+}
+
+// Reads request lines from the browser. Returns true if any byte arrived.
+static bool face_serial() {
+    static char line[FACE_MAX_LINE + 1];
+    static size_t length = 0;
+    static bool too_long = false;
+    bool got_input = false;
+    while (Serial.available() > 0) {
+        char c = char(Serial.read());
+        got_input = true;
+        if (c != '\n' && c != '\r') {
+            if (length < FACE_MAX_LINE) {
+                line[length++] = c;
+            } else {
+                too_long = true;  // drop the rest; answer once the line ends
+            }
+            continue;
+        }
+        if (too_long) {
+            serial_write_line(nullptr, "0 ERR BAD_LINE");
+        } else if (length > 0) {
+            line[length] = '\0';
+            if (std::strcmp(line, "BENCH") == 0) {  // typed in the Arduino serial monitor
+                restart_for_bench();
+            }
+            face_app.handle_line(line, millis());
+            if (face_app.take_bench_request()) {
+                restart_for_bench();
+            }
+        }
+        length = 0;
+        too_long = false;
+    }
+    return got_input;
+}
+
+static void face_setup() {
+    state_lock = xSemaphoreCreateMutexStatic(&state_lock_memory);
+    output_lock = xSemaphoreCreateMutexStatic(&output_lock_memory);
+
+    // No access point: Wi-Fi only carries ESP-NOW. Sleep off, so no packets are missed.
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    WiFi.setSleep(false);
+    WiFi.setChannel(WIFI_CHANNEL);
+    if (!radio_begin(WIFI_IF_STA)) {
+        Serial.println("# ESP-NOW failed to start: this hub will not sync");
+    }
+    sync_engine->begin(replica, APP_MODE, radio_send, on_sync_event, nullptr, millis());
+    face_app.begin(BOARD_LETTER, APP_MODE, replica, sync_engine, serial_write_line, micros_now, nullptr);
+    face_app.set_lock(take_state, give_state);
+
+    Serial.printf("# hub %c ready (face mode, mesh side on core %d)\n", BOARD_LETTER, SYNC_ON_CORE0 ? 0 : 1);
+    Serial.printf("# heap while running: free=%u largest_block=%u\n", unsigned(ESP.getFreeHeap()),
+                  unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    face_app.boot();
+    if (SYNC_ON_CORE0 &&
+        xTaskCreatePinnedToCore(mesh_task, "mesh", MESH_TASK_STACK, nullptr, 1, nullptr, 0) != pdPASS) {
+        Serial.println("# could not start the mesh task: this hub will not sync");
+    }
+}
+
+static void face_loop() {
+    bool got_input = face_serial();
+    if (!SYNC_ON_CORE0) {
+        mesh_step(0);  // single-core mode, for comparing timings
+    }
+    uint32_t now = millis();
+    digitalWrite(LED_PIN, (sync_engine->syncing() || face_app.led_on(now)) ? HIGH : LOW);
+    if (!got_input) {
+        delay(1);  // nothing to read: let lower-priority tasks run
+    }
+}
+
+#else
+// ======================================================================================
+// Digit mode: serial commands, one per line.
+// ======================================================================================
+
 static void handle_serial() {
     static char line[64];
     static size_t length = 0;
@@ -450,10 +630,7 @@ static void handle_serial() {
         if (c == '\n' || c == '\r') {
             line[length] = '\0';
             if (std::strcmp(line, "BENCH") == 0) {
-                Serial.println("# restarting to run BENCH with unfragmented memory");
-                Serial.flush();
-                bench_request = BENCH_MAGIC;
-                ESP.restart();
+                restart_for_bench();
             }
             length = 0;
         } else if (length < sizeof(line) - 1) {
@@ -462,11 +639,61 @@ static void handle_serial() {
     }
 }
 
+static void digits_setup() {
+    replica->resume_session(MY_DIGITS, 0);
+    Serial.printf("# own digit version %u\n", unsigned(replica->session_version(MY_DIGITS)));
+
+    char wifi_name[32];
+    std::snprintf(wifi_name, sizeof(wifi_name), "%s-%c", WIFI_NAME_PREFIX, BOARD_LETTER);
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(wifi_name, AP_PASSWORD, WIFI_CHANNEL, 0, AP_MAX_CLIENTS);
+    if (!radio_begin(WIFI_IF_AP)) {  // we run as an access point, so send on that interface
+        Serial.println("# ESP-NOW failed to start: this hub will not sync");
+    }
+    sync_engine->begin(replica, APP_MODE, radio_send, on_sync_event, nullptr, millis());
+
+    server.on("/", HTTP_GET, handle_page);
+    server.on("/teach", HTTP_POST, handle_teach);
+    server.on("/guess", HTTP_POST, handle_guess);
+    server.on("/status", HTTP_GET, handle_status);
+    server.onNotFound(handle_page);  // any other address shows the page
+    server.begin();
+
+    Serial.printf("# room %c ready: join Wi-Fi \"%s\" and open http://%s\n", BOARD_LETTER, wifi_name,
+                  WiFi.softAPIP().toString().c_str());
+    Serial.printf("# heap while running: free=%u largest_block=%u\n", unsigned(ESP.getFreeHeap()),
+                  unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+}
+
+static void digits_loop() {
+    static RadioPacket packet;
+    uint32_t now = millis();
+
+    // Bounded, so a flood of packets can't starve the web server.
+    for (int handled = 0; handled < 16; handled++) {
+        if (radio_queue == nullptr || xQueueReceive(radio_queue, &packet, 0) != pdTRUE) {
+            break;
+        }
+        sync_engine->on_packet(packet.data, packet.length, now);
+    }
+    sync_engine->tick(now);
+    server.handleClient();
+    handle_serial();
+
+    // LED: on while syncing, plus a short flash after each teach.
+    bool flash = int32_t(led_off_at_ms - now) > 0;
+    digitalWrite(LED_PIN, (sync_engine->syncing() || flash) ? HIGH : LOW);
+    delay(1);  // let the Wi-Fi tasks run
+}
+#endif
+
 // ======================================================================================
 // setup / loop
 // ======================================================================================
 
 void setup() {
+    // Bursts of reply lines (SLOTS, mesh reports) go into this buffer instead of blocking.
+    Serial.setTxBufferSize(SERIAL_TX_BUFFER);
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
 
@@ -500,49 +727,19 @@ void setup() {
     if (result != Result::Ok) {
         Serial.printf("# saved state problem: %s (starting with what could be read)\n", result_name(result));
     }
-    replica->resume_session(MY_DIGITS, 0);
-    Serial.printf("# loaded %d slots, %d tombstones; own version %u\n", replica->slot_count(),
-                  replica->tombstone_count(), unsigned(replica->session_version(MY_DIGITS)));
+    Serial.printf("# loaded %d slots, %d tombstones\n", replica->slot_count(), replica->tombstone_count());
 
-    char wifi_name[32];
-    std::snprintf(wifi_name, sizeof(wifi_name), "%s-%c", WIFI_NAME_PREFIX, BOARD_LETTER);
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(wifi_name, AP_PASSWORD, WIFI_CHANNEL, 0, AP_MAX_CLIENTS);
-    if (!radio_begin()) {
-        Serial.println("# ESP-NOW failed to start: this hub will not sync");
-    }
-    sync_engine->begin(replica, APP_MODE, radio_send, on_sync_event, nullptr, millis());
-
-    server.on("/", HTTP_GET, handle_page);
-    server.on("/teach", HTTP_POST, handle_teach);
-    server.on("/guess", HTTP_POST, handle_guess);
-    server.on("/status", HTTP_GET, handle_status);
-    server.onNotFound(handle_page);  // any other address shows the page
-    server.begin();
-
-    Serial.printf("# room %c ready: join Wi-Fi \"%s\" and open http://%s\n", BOARD_LETTER, wifi_name,
-                  WiFi.softAPIP().toString().c_str());
-    Serial.printf("# heap while running: free=%u largest_block=%u\n", unsigned(ESP.getFreeHeap()),
-                  unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+#if APP_MODE == APP_FACE
+    face_setup();
+#else
+    digits_setup();
+#endif
 }
 
 void loop() {
-    static RadioPacket packet;
-    uint32_t now = millis();
-
-    // Bounded, so a flood of packets can't starve the web server.
-    for (int handled = 0; handled < 16; handled++) {
-        if (radio_queue == nullptr || xQueueReceive(radio_queue, &packet, 0) != pdTRUE) {
-            break;
-        }
-        sync_engine->on_packet(packet.data, packet.length, now);
-    }
-    sync_engine->tick(now);
-    server.handleClient();
-    handle_serial();
-
-    // LED: on while syncing, plus a short flash after each teach.
-    bool flash = int32_t(led_off_at_ms - now) > 0;
-    digitalWrite(LED_PIN, (sync_engine->syncing() || flash) ? HIGH : LOW);
-    delay(1);  // let the Wi-Fi tasks run
+#if APP_MODE == APP_FACE
+    face_loop();
+#else
+    digits_loop();
+#endif
 }
