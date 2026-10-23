@@ -6,6 +6,7 @@
 import { createLandmarker, extractFeatures, DRAW_POINTS, BLENDSHAPE_NAMES, LANDMARK_NAMES } from './features.js';
 
 const GESTURES = ['neutral', 'eyebrows up', 'smile'];
+const INSTRUCTIONS = ['Relax your face', 'Raise your eyebrows', 'Smile'];
 const SAMPLES_PER_CLASS = 45;     // 3 s at 15 Hz
 const SEND_INTERVAL_MS = 1000 / 15;
 const CLASS_TIMEOUT_MS = 15000;   // give up on a gesture if no face for this long
@@ -257,10 +258,12 @@ const state = {
   lastSerialPort: null,
 };
 
-function setStatus(text, kind = '') {
-  const el = $('hub-status');
-  el.textContent = text;
-  el.className = 'pill ' + kind;
+// The chip in the top bar is short; the line under step 1 can say more.
+function setStatus(chip, kind = '', detail = '') {
+  $('hub-status').textContent = chip;
+  $('hub-status').className = 'chip ' + kind;
+  $('connect-status').textContent = detail;
+  $('connect-status').className = 'status-line ' + (kind === 'ok' ? '' : kind);
 }
 
 function log(text) {
@@ -275,12 +278,19 @@ function log(text) {
 function showPrompt(text, kind = '') {
   const el = $('calib-prompt');
   el.textContent = text;
-  el.className = 'prompt ' + kind;
+  el.className = 'status-line ' + kind;
 }
 
-function digestColor(digest) {
-  const value = parseInt(digest, 16) || 0;
-  return `hsl(${value % 360}, 65%, 58%)`;
+// Big instruction on top of the camera image during calibration. fraction = progress 0-1.
+function showCue(text, sub, fraction) {
+  $('cue').hidden = false;
+  $('cue-text').textContent = text;
+  $('cue-sub').textContent = sub;
+  $('cue-fill').style.width = `${Math.round(fraction * 100)}%`;
+}
+
+function hideCue() {
+  $('cue').hidden = true;
 }
 
 // ======================================================================================
@@ -291,7 +301,7 @@ hub.onLog = (line) => log(line);
 hub.onClose = () => {
   state.connected = false;
   state.sessions = {};
-  setStatus('hub disconnected', 'bad');
+  setStatus('Hub disconnected', 'bad', 'The hub was unplugged or stopped answering. Plug it back in and press Reconnect.');
   log('hub disconnected');
   renderControls();
 };
@@ -301,18 +311,20 @@ async function connect(kind) {
   state.connected = false;
   state.sessions = {};
   state.mesh = { self: null, peers: {}, slots: [] };
-  setStatus(kind === 'sim' ? 'starting the simulated mesh…' : 'choose the hub\'s USB port…');
+  $('mesh-live').hidden = true;
+  setStatus('Connecting', 'warn', kind === 'sim' ? 'Starting three simulated hubs…' : 'Choose the hub in the list Chrome shows (usually "CP2102" or "usbserial").');
   try {
     await hub.connect(kind, null);
     if (kind === 'serial') state.lastSerialPort = hub.transport.port;
   } catch (error) {
-    setStatus('not connected', 'bad');
+    const cancelled = error && error.name === 'NotFoundError';  // closed the port chooser
+    setStatus('No hub connected', cancelled ? '' : 'bad', cancelled ? '' : (error.message || String(error)));
     log(error.message || String(error));
     renderControls();
     return;
   }
   $('sim-panel').hidden = kind !== 'sim';
-  setStatus('waiting for the hub to start…', 'warn');
+  setStatus('Starting', 'warn', 'Waiting for the hub to start…');
   // Opening the port restarts the board. If no BOOT line comes, it may not have restarted.
   clearTimeout(state.bootTimer);
   state.bootTimer = setTimeout(() => handshake(), BOOT_WAIT_MS);
@@ -325,12 +337,13 @@ async function handshake() {
   state.sessions = {};
   const hello = await hub.request('HELLO 1');
   if (!hello.ok) {
-    setStatus(`hub did not answer (${hello.code})`, 'bad');
+    setStatus('Hub not answering', 'bad', `The hub did not answer (${hello.code}). Check that it runs the face firmware and that the Arduino serial monitor is closed.`);
     return;
   }
+  if (hello.fields[1] !== state.hubLetter) showPrompt('');  // messages about the previous hub
   state.hubLetter = hello.fields[1];
   state.connected = true;
-  setStatus(`connected to hub ${state.hubLetter}`, 'ok');
+  setStatus(`Hub ${state.hubLetter} connected`, 'ok', `Connected to hub ${state.hubLetter}.`);
   log(`connected to hub ${state.hubLetter} (protocol ${hello.fields[2]}, ${hello.fields[3]} slots max)`);
   if (state.user) await sendUser();
   await hub.request(`LAMBDA ${Math.round(state.lambda * 1000)}`);
@@ -342,7 +355,6 @@ function handleEvent(text) {
   const f = text.split(' ');
   if (f[0] === 'BOOT') {
     log(`hub ${f[1]} started`);
-    state.hubLetter = f[1];
     clearTimeout(state.bootTimer);
     handshake();  // also after an unexpected restart: sessions on the hub are gone
   } else if (f[0] === 'EVENT' && f[1] === 'MESH') {
@@ -435,8 +447,8 @@ function freshFeatures() {
 }
 
 async function calibrate(classes) {
-  if (!state.connected) return showPrompt('Connect a hub first.', 'bad');
-  if (!state.user) return showPrompt('Enter your user number first.', 'bad');
+  if (!state.connected) return showPrompt('Connect a hub first (step 1).', 'bad');
+  if (!state.user) return showPrompt('Choose your number first (step 2).', 'bad');
   if (!landmarker && !freshFeatures()) return showPrompt('Start the camera first.', 'bad');
   state.calibrating = true;
   state.cancel = false;
@@ -446,7 +458,8 @@ async function calibrate(classes) {
     await ensureSessions();
     for (const label of classes) {
       for (let s = 3; s > 0 && !state.cancel; s--) {
-        showPrompt(`Get ready: ${GESTURES[label].toUpperCase()} in ${s}…`);
+        showCue(INSTRUCTIONS[label], `Starts in ${s}`, 0);
+        showPrompt(`Next: ${INSTRUCTIONS[label].toLowerCase()}.`);
         await sleep(1000);
       }
       let count = 0;
@@ -460,23 +473,23 @@ async function calibrate(classes) {
         }
         const features = freshFeatures();
         if (!features) {
-          showPrompt(`No face detected. Look at the camera (${GESTURES[label]})`, 'warn');
+          showCue(INSTRUCTIONS[label], 'Can\'t see your face. Look at the camera.', count / SAMPLES_PER_CLASS);
           continue;
         }
         const r = await addSample(label, features);
         if (!r.ok) throw new Error(`The hub refused a sample: ${r.code}`);
         count++;
-        showPrompt(`Hold ${GESTURES[label].toUpperCase()}  ${count}/${SAMPLES_PER_CLASS}`, 'rec');
-        $('calib-progress').value = count / SAMPLES_PER_CLASS;
+        showCue(INSTRUCTIONS[label], 'Hold it', count / SAMPLES_PER_CLASS);
+        showPrompt(`Recording: ${INSTRUCTIONS[label].toLowerCase()}.`);
         rows.push([Date.now(), state.user, state.hubLetter, 'gesture', label, '', '', ...features.blend, ...features.landmark]);
       }
     }
-    showPrompt(state.cancel ? 'Stopped.' : `Done. Hub ${state.hubLetter} has your calibration and shares it with the other hubs within a few seconds.`, state.cancel ? 'warn' : 'ok');
+    showPrompt(state.cancel ? 'Stopped. The samples recorded so far are kept.' : `Done. Hub ${state.hubLetter} has your calibration and passes it to the other hubs within a few seconds.`, state.cancel ? 'warn' : 'ok');
   } catch (error) {
     showPrompt(error.message, 'bad');
   } finally {
     state.calibrating = false;
-    $('calib-progress').value = 0;
+    hideCue();
     renderControls();
     refreshSlotsSoon();
     if (rows.length && state.recordDir) await saveRecording(rows);
@@ -503,7 +516,9 @@ async function predictLoop() {
       } else {
         showNoPrediction(r.code);
       }
-    } else if (!features && !state.calibrating) {
+    } else if (state.calibrating) {
+      showNoPrediction('CALIBRATING');
+    } else if (!features) {
       showNoPrediction(landmarker ? 'NO_FACE' : 'NO_CAMERA');
     }
     await sleep(Math.max(0, SEND_INTERVAL_MS - (performance.now() - started)));
@@ -515,28 +530,33 @@ function showPrediction(fields) {
   const label = +fields[2];
   const p = [+fields[3], +fields[4], +fields[5]];
   $('pred-label').textContent = GESTURES[label];
-  $('pred-label').className = 'pred-label g' + label;
-  $('pred-conf').textContent = `${(p[label] / 10).toFixed(0)}% sure`;
+  $('pred-label').className = 'word g' + label;
+  $('pred-conf').textContent = `${Math.round(p[label] / 10)}% sure`;
   for (let c = 0; c < 3; c++) {
     $('bar-' + c).style.width = `${p[c] / 10}%`;
-    $('barv-' + c).textContent = `${(p[c] / 10).toFixed(0)}%`;
+    $('barv-' + c).textContent = `${Math.round(p[c] / 10)}%`;
   }
-  $('pred-samples').textContent = `model built from ${fields[6]} of your samples + ${fields[7]} from other people (λ = ${state.lambda.toFixed(1)})`;
+  const own = +fields[6];
+  const others = +fields[7];
+  $('pred-samples').textContent = others === 0
+    ? `Built from your ${own} samples.`
+    : `Built from your ${own} samples and ${others} from other people.`;
 }
 
 function showNoPrediction(code) {
   const messages = {
-    NOT_READY: 'No calibration yet. Calibrate below, or raise λ to use other people\'s calibration.',
-    NO_FACE: 'No face detected.',
-    NO_CAMERA: 'Camera is off.',
+    CALIBRATING: 'Paused while you calibrate.',
+    NOT_READY: 'Nothing to go on yet. Calibrate, or let other people\'s calibration count more.',
+    NO_FACE: 'Can\'t see a face.',
+    NO_CAMERA: 'Start the camera to see your gesture here.',
     TIMEOUT: 'The hub did not answer in time.',
-    NOT_CONNECTED: 'No hub connected.',
-    DISCONNECTED: 'No hub connected.',
+    NOT_CONNECTED: 'Connect a hub to start.',
+    DISCONNECTED: 'Connect a hub to start.',
   };
-  $('pred-label').textContent = '—';
-  $('pred-label').className = 'pred-label';
+  $('pred-label').textContent = code === 'CALIBRATING' ? 'Paused' : 'No gesture yet';
+  $('pred-label').className = 'word idle';
   $('pred-conf').textContent = '';
-  $('pred-samples').textContent = messages[code] || `Hub: ${code}`;
+  $('pred-samples').textContent = messages[code] || `The hub answered ${code}.`;
   for (let c = 0; c < 3; c++) {
     $('bar-' + c).style.width = '0%';
     $('barv-' + c).textContent = '';
@@ -548,7 +568,7 @@ function recordRtt(ms) {
   if (state.rtts.length > 300) state.rtts.shift();
   const sorted = [...state.rtts].sort((a, b) => a - b);
   const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
-  $('rtt').textContent = `round trip (last ${sorted.length}): median ${pick(0.5).toFixed(1)} ms, 95% ${pick(0.95).toFixed(1)} ms, max ${sorted[sorted.length - 1].toFixed(1)} ms`;
+  $('rtt').textContent = `Page to hub and back, last ${sorted.length} predictions: typical ${pick(0.5).toFixed(1)} ms, 95% under ${pick(0.95).toFixed(1)} ms, slowest ${sorted[sorted.length - 1].toFixed(1)} ms.`;
 }
 
 // ======================================================================================
@@ -608,36 +628,78 @@ async function refreshSlots() {
 }
 setInterval(refreshSlots, 3000);
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svg(tag, attributes, text) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attributes)) el.setAttribute(key, value);
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// Our hub in the middle, every hub it hears around it. Filled = same data as ours,
+// hollow = still catching up, dashed = not heard for a while. Thicker line = stronger signal.
 function renderMesh() {
   const self = state.mesh.self;
   if (!self) return;
-  $('self-swatch').style.background = digestColor(self.digest);
-  $('self-text').textContent = `hub ${state.hubLetter} · ${self.slots} slots · ${self.tombstones} deleted · ${self.syncing ? 'syncing' : 'idle'} · sent ${self.txPackets} packets/s`;
-  const rows = Object.entries(state.mesh.peers).sort(([a], [b]) => a.localeCompare(b)).map(([letter, p]) => {
-    const same = p.digest === self.digest;
-    const other = p.app !== 2;
-    const rssi = p.rssi === 0 ? 'n/a' : `${p.rssi} dBm`;
-    const bars = p.rssi === 0 ? '' : '▮'.repeat(Math.max(1, Math.min(4, Math.round((p.rssi + 100) / 12))));
-    const sync = other ? 'other app' : !p.online ? 'offline' : same ? 'same state' : 'differs';
-    return `<tr><td><span class="swatch" style="background:${other ? '#555' : digestColor(p.digest)}"></span>${letter}</td>
-      <td class="${p.online ? 'ok' : 'bad'}">${sync}</td><td>${rssi} <span class="bars">${bars}</span></td>
-      <td>${p.packets}/s · ${(p.bytes / 1024).toFixed(1)} KB/s</td>
-      <td class="mono">${p.hb}/${p.inv}/${p.req}/${p.chunk}</td><td>${(p.ageMs / 1000).toFixed(1)} s</td></tr>`;
+  const peers = Object.entries(state.mesh.peers).sort(([a], [b]) => a.localeCompare(b));
+  const holds = `${self.slots} calibration slot${self.slots === 1 ? '' : 's'}`;
+  const deleted = self.tombstones ? `, and remembers ${self.tombstones} deleted one${self.tombstones === 1 ? '' : 's'}` : '';
+  $('self-text').textContent = `Hub ${state.hubLetter} holds ${holds}${deleted}. ${self.syncing ? 'It is syncing right now.' : ''}`;
+
+  // Our hub on the left, the hubs it hears in a column on the right.
+  $('mesh-live').hidden = false;
+  const box = $('mesh-svg');
+  box.replaceChildren();
+  const rowGap = 54;
+  const height = Math.max(120, peers.length * rowGap + 30);
+  box.setAttribute('viewBox', `0 0 320 ${height}`);
+  const cx = 70, cy = height / 2, px = 250;
+  const peerY = (i) => cy + (i - (peers.length - 1) / 2) * rowGap;
+  peers.forEach(([letter, p], i) => {
+    const strength = p.rssi === 0 ? 2 : Math.max(1, Math.min(6, (p.rssi + 100) / 11));
+    box.append(svg('line', { x1: cx, y1: cy, x2: px, y2: peerY(i), stroke: p.online ? '#a9b6c0' : '#d5dbe0',
+      'stroke-width': strength, 'stroke-dasharray': p.online ? '' : '4 4', 'stroke-linecap': 'round' }));
   });
-  $('peers').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="muted">No other hubs heard yet.</td></tr>';
+  peers.forEach(([letter, p], i) => {
+    const y = peerY(i);
+    const same = p.online && p.app === 2 && p.digest === self.digest;
+    const style = !p.online || p.app !== 2
+      ? { fill: '#fff', stroke: '#94a1ab', width: 1.5, dash: '3 3', text: '#94a1ab' }
+      : same ? { fill: '#2f5bea', stroke: '#2f5bea', width: 2, dash: '', text: '#fff' }
+        : { fill: '#fff', stroke: '#c98a12', width: 3, dash: '', text: '#15222c' };
+    box.append(svg('circle', { cx: px, cy: y, r: 19, fill: style.fill, stroke: style.stroke,
+      'stroke-width': style.width, 'stroke-dasharray': style.dash }));
+    box.append(svg('text', { x: px, y: y + 4.5, 'text-anchor': 'middle', fill: style.text }, letter));
+  });
+  box.append(svg('circle', { cx, cy, r: 26, fill: '#15222c' }));
+  box.append(svg('text', { x: cx, y: cy + 5, 'text-anchor': 'middle', fill: '#fff', style: 'font-size:16px' }, state.hubLetter));
+  if (peers.length === 0) {
+    box.append(svg('text', { x: 200, y: cy + 4, 'text-anchor': 'middle', fill: '#94a1ab', style: 'font-weight:500' }, 'no other hubs heard'));
+  }
+
+  const rows = peers.map(([letter, p]) => {
+    const data = p.app !== 2 ? 'other app' : !p.online ? 'offline' : p.digest === self.digest ? 'same as yours' : 'catching up';
+    const signal = p.rssi === 0 ? 'n/a' : `${p.rssi} dBm`;
+    return `<tr><td>${letter}</td><td>${data}</td><td>${signal}</td><td class="num">${p.packets}</td></tr>`;
+  });
+  $('peers').innerHTML = rows.length ? rows.join('') : '<tr class="empty-row"><td colspan="4">No other hubs heard yet.</td></tr>';
 }
 
 function renderSlots() {
   const slots = state.mesh.slots;
-  const mine = slots.filter((s) => s.user === state.user && state.user);
-  const mineSamples = mine.filter((s) => s.type === 'gest_blend').reduce((n, s) => n + s.samples, 0);
-  $('mine-text').textContent = state.user
-    ? (mine.length ? `Your calibration on this hub: ${mineSamples} gesture samples, from hub(s) ${[...new Set(mine.map((s) => s.owner))].join(', ')}.` : 'This hub has none of your calibration (yet).')
-    : 'Set a user number to see your calibration.';
-  const types = { gest_blend: 'gesture (blendshapes)', gest_lmk: 'gesture (landmarks)', gaze: 'gaze', digits: 'digits' };
+  const isMine = (s) => state.user && s.user === state.user;
+  const mine = slots.filter((s) => isMine(s) && s.type === 'gest_blend');
+  const samples = mine.reduce((n, s) => n + s.samples, 0);
+  const owners = [...new Set(mine.map((s) => s.owner))].join(' and ');
+  $('mine-text').textContent = !state.user
+    ? 'Choose your number to see your calibration.'
+    : mine.length ? `Your ${samples} gesture samples are here, recorded at hub ${owners}.` : 'None of your calibration is on this hub yet.';
+  const kinds = { gest_blend: 'gestures, face scores', gest_lmk: 'gestures, distances', gaze: 'gaze', digits: 'digits' };
   $('slots').innerHTML = slots.length
-    ? slots.map((s) => `<tr class="${s.user === state.user && state.user ? 'mine' : ''}"><td>${s.owner}</td><td>${types[s.type] || s.type}</td><td>${s.user}${s.user === state.user && state.user ? ' (you)' : ''}</td><td>${s.samples}</td><td class="mono">${s.key}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="muted">No calibration stored on this hub.</td></tr>';
+    ? slots.map((s) => `<tr class="${isMine(s) ? 'mine' : ''}"><td>${s.owner}</td><td>${kinds[s.type] || s.type}</td><td>${s.user}${isMine(s) ? ' (you)' : ''}</td><td class="num">${s.samples}</td></tr>`).join('')
+    : '<tr class="empty-row"><td colspan="4">Nothing yet.</td></tr>';
+  renderControls();
 }
 
 // ======================================================================================
@@ -650,10 +712,10 @@ function renderSim() {
   const count = sim.count();
   const attached = sim.attached();
   const letters = [...Array(count).keys()].map((i) => String.fromCharCode(65 + i));
-  $('sim-attach').innerHTML = letters.map((l, i) => `<button data-hub="${i}" class="${i === attached ? 'on' : ''}">${l}</button>`).join('');
+  $('sim-attach').innerHTML = letters.map((l, i) => `<button data-hub="${i}" class="btn small ${i === attached ? 'on' : ''}">${l}</button>`).join('');
   const pairs = [];
   for (let a = 0; a < count; a++) for (let b = a + 1; b < count; b++) pairs.push([a, b]);
-  $('sim-links').innerHTML = pairs.map(([a, b]) => `<button data-a="${a}" data-b="${b}" class="${sim.link(a, b) ? 'on' : ''}">${letters[a]}–${letters[b]}</button>`).join('');
+  $('sim-links').innerHTML = pairs.map(([a, b]) => `<button data-a="${a}" data-b="${b}" class="btn small ${sim.link(a, b) ? 'on' : ''}" aria-pressed="${sim.link(a, b) ? 'true' : 'false'}">${letters[a]}–${letters[b]}</button>`).join('');
 }
 
 $('sim-attach').addEventListener('click', (event) => {
@@ -722,7 +784,7 @@ async function startCamera() {
     return;
   }
   const video = $('video');
-  $('camera-status').textContent = 'starting the camera…';
+  $('camera-status').textContent = 'Starting the camera…';
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
     video.srcObject = stream;
@@ -737,7 +799,7 @@ async function startCamera() {
     return;
   }
   if (!landmarker) {
-    $('camera-status').textContent = 'loading the face model (local files, no internet needed)…';
+    $('camera-status').textContent = 'Loading the face model from this laptop…';
     try {
       landmarker = await createLandmarker();
     } catch (error) {
@@ -745,8 +807,8 @@ async function startCamera() {
       return;
     }
   }
-  $('camera-status').textContent = 'The video stays in this page. Only 12 numbers per frame go to the hub.';
-  $('camera-start').hidden = true;
+  $('camera-empty').hidden = true;
+  $('face-status').hidden = false;
   requestAnimationFrame(frameLoop);
 }
 
@@ -761,8 +823,8 @@ function frameLoop() {
       state.featuresAt = performance.now();
     }
     drawOverlay(features, video.videoWidth, video.videoHeight);
-    $('face-status').textContent = features ? (features.clamped ? `face found (${features.clamped} values clamped)` : 'face found') : 'no face detected';
-    $('face-status').className = 'pill ' + (features ? 'ok' : 'warn');
+    $('face-status').textContent = features ? 'Face found' : 'No face';
+    $('face-status').className = 'chip face ' + (features ? 'ok' : 'warn');
     renderFeatureBars(features);
   }
   requestAnimationFrame(frameLoop);
@@ -777,11 +839,11 @@ function drawOverlay(features, width, height) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
   if (!features) return;
-  ctx.fillStyle = '#6ea8ff';
+  ctx.fillStyle = '#8fb0ff';
   for (const i of DRAW_POINTS) {
     const p = features.points[i];
     ctx.beginPath();
-    ctx.arc(p.x * width, p.y * height, 3, 0, 2 * Math.PI);
+    ctx.arc(p.x * width, p.y * height, 2.5, 0, 2 * Math.PI);
     ctx.fill();
   }
 }
@@ -806,13 +868,22 @@ function renderFeatureBars(features) {
 // Controls
 // ======================================================================================
 
+// Steps 1-4 light up in order: done steps turn green, the next one to do is blue.
 function renderControls() {
   const ready = state.connected && state.user > 0 && !state.calibrating;
   for (const id of ['calib-all', 'calib-0', 'calib-1', 'calib-2']) $(id).disabled = !ready;
   $('calib-stop').hidden = !state.calibrating;
   $('delete-start').disabled = !(state.connected && state.user > 0) || state.calibrating;
-  $('user-epoch').textContent = state.user ? `deletion counter ${state.epoch}` : '';
+  $('user-epoch').textContent = state.user ? `You are person ${state.user}.` : '';
+  $('user-epoch').className = 'status-line';
   $('reconnect').hidden = !(state.lastSerialPort && !hub.transport);
+
+  const calibrated = state.mesh.slots.some((s) => state.user && s.user === state.user && s.samples > 0);
+  const done = [state.connected, state.connected && state.user > 0, calibrated];
+  const steps = ['step-connect', 'step-you', 'step-calib'];
+  const next = done.indexOf(false);
+  steps.forEach((id, i) => { $(id).className = 'step' + (done[i] ? ' done' : i === next ? ' current' : ''); });
+  $('step-use').className = 'panel readout' + (next === -1 ? ' current' : '');
 }
 
 $('connect-serial').onclick = () => connect('serial');
@@ -820,9 +891,10 @@ $('connect-sim').onclick = () => connect('sim');
 $('reconnect').onclick = async () => {
   try {
     await hub.connect('serial', state.lastSerialPort);
-    setStatus('waiting for the hub to start…', 'warn');
+    setStatus('Starting', 'warn', 'Waiting for the hub to start…');
     state.bootTimer = setTimeout(() => handshake(), BOOT_WAIT_MS);
   } catch (error) {
+    setStatus('No hub connected', 'bad', error.message);
     log(error.message);
   }
   renderControls();
@@ -832,6 +904,7 @@ $('user-set').onclick = async () => {
   const value = Number($('user-id').value);
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
     $('user-epoch').textContent = 'Use a whole number from 1 to 65535.';
+    $('user-epoch').className = 'status-line bad';
     return;
   }
   state.user = value;
@@ -846,7 +919,7 @@ $('user-random').onclick = () => {
 };
 $('lambda').oninput = () => {
   state.lambda = Number($('lambda').value);
-  $('lambda-value').textContent = state.lambda.toFixed(1);
+  $('lambda-value').textContent = state.lambda === 0 ? 'none' : state.lambda === 1 ? 'same as mine' : `${state.lambda.toFixed(1)}× mine`;
   clearTimeout(state.lambdaTimer);
   state.lambdaTimer = setTimeout(() => hub.request(`LAMBDA ${Math.round(state.lambda * 1000)}`), 150);
 };
@@ -866,28 +939,28 @@ $('record-consent').onchange = () => {
   $('record-folder').disabled = !$('record-consent').checked;
   if (!$('record-consent').checked) {
     state.recordDir = null;
-    $('record-status').textContent = 'Recording is off.';
+    $('record-status').textContent = 'Not recording.';
   }
 };
 $('record-folder').onclick = chooseRecordFolder;
 $('timing-read').onclick = async () => {
   const r = await hub.request('TIMING');
-  $('timing').textContent = r.ok ? describeTiming(r.fields) : `hub: ${r.code}`;
+  $('timing').textContent = r.ok ? describeTiming(r.fields) : `The hub answered ${r.code}.`;
 };
 $('timing-reset').onclick = async () => {
   state.rtts = [];
-  $('rtt').textContent = '';
+  $('rtt').textContent = 'No predictions yet.';
   const r = await hub.request('TIMING RESET');
-  $('timing').textContent = r.ok ? 'reset' : `hub: ${r.code}`;
+  $('timing').textContent = r.ok ? 'Started over.' : `The hub answered ${r.code}.`;
 };
 
 function describeTiming(fields) {
   // TIMING idle=<n>,<avg_us>,<max_us> sync=<n>,<avg_us>,<max_us>
   const part = (text) => {
     const [n, avg, max] = text.split('=')[1].split(',').map(Number);
-    return n ? `${n} predictions, avg ${(avg / 1000).toFixed(2)} ms, max ${(max / 1000).toFixed(2)} ms` : 'none yet';
+    return n ? `${n} predictions, average ${(avg / 1000).toFixed(2)} ms, slowest ${(max / 1000).toFixed(2)} ms` : 'none yet';
   };
-  return `on the hub, while idle: ${part(fields[1])}; while syncing: ${part(fields[2])}`;
+  return `Time the hub spends per prediction. While idle: ${part(fields[1])}. While syncing: ${part(fields[2])}.`;
 }
 
 renderControls();

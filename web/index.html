@@ -3,204 +3,314 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>construct: face controller</title>
+<title>construct</title>
 <style>
+  /* Light instrument look: cool grey ground, white working surfaces, slate ink, one cobalt for
+     "live". Each gesture has its own color. System fonts only: the page must work offline. */
   :root {
-    --bg: #0b1020; --panel: #121a2e; --panel-2: #172038; --line: #24304d; --text: #e6ebf5;
-    --muted: #8a96b2; --accent: #6ea8ff; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
-    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --ground: #e7ebee;
+    --surface: #ffffff;
+    --sunken: #f2f4f6;
+    --rule: #d5dbe0;
+    --ink: #15222c;
+    --muted: #5d6c78;
+    --faint: #94a1ab;
+    --live: #2f5bea;
+    --live-soft: #e3eafd;
+    --neutral: #7d8c98;
+    --brows: #c98a12;
+    --smile: #0f9a80;
+    --danger: #bf3a30;
+    --danger-soft: #fbeceb;
+    --ok: #1d8a52;
+    --radius: 12px;
+    --font: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 17px; margin: 0 8px 0 0; }
-  header .sub { color: var(--muted); font-size: 13px; flex: 1 1 300px; }
-  .layout { display: grid; grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 1fr) minmax(320px, 1fr); gap: 14px; padding: 14px 20px; align-items: start; }
-  @media (max-width: 1150px) { .layout { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; padding: 12px 16px; } }
-  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  button, select, input[type=number] { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; }
-  button { cursor: pointer; }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; }
-  button.on { background: var(--accent); border-color: var(--accent); color: #0b1020; }
-  button.danger { border-color: #6b2525; color: var(--bad); }
-  button:disabled { opacity: .45; cursor: default; }
-  input[type=number] { width: 110px; }
-  .pill { font: 12px var(--mono); padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
-  .pill.ok { border-color: #1f5e3a; color: var(--ok); }
-  .pill.warn { border-color: #6b5316; color: var(--warn); }
-  .pill.bad { border-color: #6b2525; color: var(--bad); }
-  .hint, .muted { color: var(--muted); font-size: 12px; }
-  .hint { margin: 8px 0 0; }
-  .video-wrap { position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; }
-  .video-wrap video, .video-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-  .video-wrap .start { position: absolute; inset: 0; display: grid; place-items: center; }
-  .pred-label { font-size: 34px; font-weight: 700; letter-spacing: .3px; }
-  .pred-label.g1 { color: var(--warn); } .pred-label.g2 { color: var(--ok); }
-  .bars-grid { display: grid; grid-template-columns: 95px 1fr 42px; gap: 6px 8px; align-items: center; margin: 10px 0 6px; font-size: 13px; }
-  .bars-grid i { display: block; height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
-  .bars-grid i b { display: block; height: 100%; width: 0; background: var(--accent); transition: width .08s; }
-  .bars-grid span:last-child, .bars-grid em { font: 12px var(--mono); text-align: right; font-style: normal; }
-  #features { display: grid; grid-template-columns: 1fr; gap: 2px; }
-  .feat { display: grid; grid-template-columns: 120px 1fr 44px; gap: 8px; align-items: center; font-size: 11px; color: var(--muted); }
-  .feat i { display: block; height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
-  .feat b { display: block; height: 100%; width: 0; background: #3c5b8f; }
-  .feat em { font: 11px var(--mono); text-align: right; font-style: normal; color: var(--text); }
-  .prompt { font-size: 18px; font-weight: 600; min-height: 28px; margin: 6px 0; }
-  .prompt.rec { color: var(--bad); } .prompt.ok { color: var(--ok); } .prompt.warn { color: var(--warn); } .prompt.bad { color: var(--bad); font-size: 14px; }
-  progress { width: 100%; height: 8px; accent-color: var(--accent); }
-  label.slider { display: grid; grid-template-columns: 1fr 34px; gap: 8px; align-items: center; }
-  input[type=range] { accent-color: var(--accent); width: 100%; }
-  .confirm { margin-top: 8px; padding: 10px; border: 1px solid #6b2525; border-radius: 8px; background: #2a1414; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); }
-  td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  tr:last-child td { border-bottom: 0; }
-  tr.mine td { color: var(--accent); }
-  td.ok { color: var(--ok); } td.bad { color: var(--bad); }
-  .mono { font-family: var(--mono); }
-  .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; border: 1px solid #0006; }
-  .bars { color: var(--ok); letter-spacing: -2px; font-size: 10px; }
-  .scroll { max-height: 260px; overflow-y: auto; }
-  ol.log { list-style: none; margin: 0; padding: 0; font: 11px var(--mono); color: var(--muted); max-height: 200px; overflow-y: auto; }
-  ol.log li { padding: 2px 0; border-bottom: 1px solid var(--line); }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums; }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
   [hidden] { display: none !important; }
+
+  /* ---- top bar ---- */
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--rule); }
+  .brand { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+  .tagline { color: var(--muted); font-size: 14px; flex: 1 1 280px; margin: 0; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--sunken); color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .chip.ok { background: #e3f4ea; color: var(--ok); } .chip.ok::before { background: var(--ok); }
+  .chip.warn { background: #fbf1dc; color: #8a5d00; } .chip.warn::before { background: var(--brows); }
+  .chip.bad { background: var(--danger-soft); color: var(--danger); } .chip.bad::before { background: var(--danger); }
+
+  /* ---- buttons ---- */
+  .btn { border: 1px solid var(--rule); background: var(--surface); border-radius: 9px; padding: 8px 14px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:hover:not(:disabled) { border-color: var(--live); color: var(--live); }
+  .btn.primary { background: var(--live); border-color: var(--live); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: #2549c4; color: #fff; }
+  .btn.quiet { border-color: transparent; background: var(--sunken); }
+  .btn.danger { color: var(--danger); border-color: #e7c3c0; }
+  .btn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+  .btn.solid-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn.small { padding: 5px 10px; font-size: 13px; }
+  .btn.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .btn:disabled { opacity: .4; cursor: default; }
+
+  /* ---- layout ---- */
+  main { display: grid; gap: 18px; padding: 18px 24px 32px; max-width: 1480px; margin: 0 auto;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(300px, 380px);
+    grid-template-areas: "camera readout mesh" "steps steps mesh" "more more mesh"; align-items: start; }
+  @media (max-width: 1180px) { main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "camera readout" "steps steps" "mesh mesh" "more more"; } }
+  @media (max-width: 720px) { main { grid-template-columns: minmax(0, 1fr); grid-template-areas: "camera" "readout" "steps" "mesh" "more"; padding: 14px 16px 24px; } .bar { padding: 12px 16px; } }
+  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); padding: 18px; min-width: 0; }
+  h2 { font-size: 15px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.005em; }
+  .lead { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  /* ---- camera ---- */
+  .camera { grid-area: camera; padding: 0; overflow: hidden; }
+  .stage { position: relative; aspect-ratio: 4 / 3; background: #1b252d; }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  .stage .empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; color: #c9d3da; }
+  .stage .empty p { margin: 0; max-width: 34ch; font-size: 14px; }
+  .face { position: absolute; top: 12px; left: 12px; }
+  /* the calibration cue sits on the image, where the person is already looking */
+  .cue { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 20px 16px; background: linear-gradient(transparent, rgba(10, 18, 25, .82) 38%); color: #fff; }
+  .cue-text { font-size: clamp(22px, 3.2vw, 34px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+  .cue-sub { font-size: 14px; color: #d3dce2; margin-top: 2px; min-height: 21px; }
+  .cue-track { height: 6px; margin-top: 10px; background: rgba(255, 255, 255, .22); border-radius: 3px; overflow: hidden; }
+  .cue-fill { height: 100%; width: 0; background: #fff; transition: width .07s linear; }
+  .camera .caption { padding: 12px 18px; color: var(--muted); font-size: 13px; margin: 0; }
+
+  /* ---- live readout (the one loud element) ---- */
+  .readout { grid-area: readout; display: flex; flex-direction: column; gap: 14px; }
+  .step-head { display: flex; align-items: baseline; gap: 10px; }
+  .step-num { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--sunken); color: var(--muted); font-size: 13px; font-weight: 700; flex: none; }
+  .done .step-num { background: var(--ok); color: #fff; }
+  .current .step-num { background: var(--live); color: #fff; }
+  .word { font-size: clamp(38px, 4.4vw, 64px); font-weight: 700; letter-spacing: -0.035em; line-height: 1.05; color: var(--ink); margin: 6px 0 0; transition: color .12s; }
+  .word.idle { font-size: 28px; letter-spacing: -0.01em; color: var(--faint); font-weight: 600; padding: 12px 0 8px; }
+  .word.g0 { color: var(--neutral); } .word.g1 { color: var(--brows); } .word.g2 { color: var(--smile); }
+  .sure { color: var(--muted); font-size: 15px; min-height: 22px; }
+  .split { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--sunken); }
+  .split i { display: block; height: 100%; width: 0; transition: width .1s; }
+  .split .s0 { background: var(--neutral); } .split .s1 { background: var(--brows); } .split .s2 { background: var(--smile); }
+  .legend { display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+  .legend .l0::before { background: var(--neutral); } .legend .l1::before { background: var(--brows); } .legend .l2::before { background: var(--smile); }
+  .legend b { color: var(--ink); font-weight: 600; margin-left: 4px; }
+  .source { font-size: 14px; color: var(--ink); margin: 0; }
+  .mix { border-top: 1px solid var(--rule); padding-top: 14px; }
+  .mix label { display: block; font-weight: 600; font-size: 14px; }
+  .mix .scale { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--muted); }
+  input[type=range] { width: 100%; accent-color: var(--live); }
+
+  /* ---- steps 1-3 ---- */
+  .steps { grid-area: steps; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; }
+  @media (max-width: 900px) { .steps { grid-template-columns: minmax(0, 1fr); } }
+  .step { padding: 18px; border-left: 1px solid var(--rule); }
+  .step:first-child { border-left: 0; }
+  @media (max-width: 900px) { .step { border-left: 0; border-top: 1px solid var(--rule); } .step:first-child { border-top: 0; } }
+  .step .lead { margin-top: 4px; }
+  .field { width: 120px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 9px; background: var(--surface); }
+  .status-line { font-size: 14px; margin: 10px 0 0; min-height: 21px; }
+  .status-line.ok { color: var(--ok); } .status-line.bad { color: var(--danger); } .status-line.warn { color: #8a5d00; }
+  .confirm { margin-top: 10px; padding: 12px; border-radius: 10px; background: var(--danger-soft); font-size: 14px; }
+  .divider { border: 0; border-top: 1px solid var(--rule); margin: 16px 0; }
+
+  /* ---- mesh ---- */
+  .mesh { grid-area: mesh; display: flex; flex-direction: column; gap: 16px; }
+  .mesh svg { width: 100%; height: auto; display: block; }
+  #mesh-live { display: flex; flex-direction: column; gap: 14px; }
+  .mesh svg text { font: 700 13px var(--font); }
+  .key { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+  .key span { display: inline-flex; align-items: center; gap: 6px; }
+  .key svg { width: 14px; height: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule); }
+  td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--sunken); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tr.mine td { color: var(--live); font-weight: 600; }
+  td.num, th.num { text-align: right; padding-right: 0; }
+  .empty-row td { color: var(--muted); }
+  .sim { background: var(--sunken); border-radius: 10px; padding: 12px; font-size: 13px; }
+  .sim p { margin: 0 0 8px; color: var(--muted); }
+  .sim .row + .row { margin-top: 8px; }
+  .sim .label { color: var(--muted); min-width: 110px; }
+  .scroll { max-height: 280px; overflow-y: auto; }
+
+  /* ---- more ---- */
+  .more { grid-area: more; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; padding: 0; }
+  @media (max-width: 720px) { .more { grid-template-columns: minmax(0, 1fr); } }
+  details { border-top: 1px solid var(--rule); padding: 0 18px; }
+  details:nth-child(-n+2) { border-top: 0; }
+  @media (max-width: 720px) { details:nth-child(2) { border-top: 1px solid var(--rule); } }
+  summary { cursor: pointer; padding: 14px 0; font-weight: 600; font-size: 14px; list-style-position: inside; }
+  details[open] { padding-bottom: 16px; }
+  .feat { display: grid; grid-template-columns: 130px 1fr 48px; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
+  .feat i { display: block; height: 6px; background: var(--sunken); border-radius: 3px; overflow: hidden; }
+  .feat b { display: block; height: 100%; width: 0; background: var(--live); opacity: .55; }
+  .feat em { font-style: normal; text-align: right; color: var(--ink); }
+  select.field { width: auto; }
+  ol.log { list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--muted); max-height: 220px; overflow-y: auto; }
+  ol.log li { padding: 3px 0; border-bottom: 1px solid var(--sunken); }
+  label.check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; }
+  label.check input { margin-top: 4px; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>construct</h1>
-  <span class="sub">Hands-free controller. Your calibration lives on the hubs and follows you between them. This page stores nothing.</span>
-  <button id="connect-serial" class="primary">Connect hub (USB)</button>
-  <button id="reconnect" hidden>Reconnect</button>
-  <button id="connect-sim">Use a simulated hub</button>
-  <span class="pill" id="hub-status">not connected</span>
+<header class="bar">
+  <h1 class="brand">construct</h1>
+  <p class="tagline">Control your computer with your face. Your calibration lives on the hubs, not on this laptop.</p>
+  <span class="chip" id="hub-status">No hub connected</span>
 </header>
 
-<div class="layout">
-  <div class="col">
-    <section>
-      <h2>Camera</h2>
-      <div class="video-wrap">
-        <video id="video" playsinline muted></video>
-        <canvas id="overlay"></canvas>
-        <div class="start"><button id="camera-start" class="primary">Start camera</button></div>
+<main>
+  <section class="panel camera" aria-label="Camera">
+    <div class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="empty" id="camera-empty">
+        <p id="camera-status">The camera image stays on this laptop. Only 12 numbers per frame go to the hub.</p>
+        <button class="btn primary" id="camera-start">Start camera</button>
       </div>
-      <div class="row" style="margin-top:8px"><span class="pill" id="face-status">camera off</span></div>
-      <p class="hint" id="camera-status">The video stays in this page. Only 12 numbers per frame go to the hub.</p>
-    </section>
-    <section>
-      <h2>Live gesture</h2>
-      <div class="pred-label" id="pred-label">—</div>
-      <div class="muted" id="pred-conf"></div>
-      <div class="bars-grid">
-        <span>neutral</span><i><b id="bar-0"></b></i><span id="barv-0"></span>
-        <span>eyebrows up</span><i><b id="bar-1"></b></i><span id="barv-1"></span>
-        <span>smile</span><i><b id="bar-2"></b></i><span id="barv-2"></span>
+      <span class="chip face" id="face-status" hidden>No face</span>
+      <div class="cue" id="cue" hidden>
+        <div class="cue-text" id="cue-text"></div>
+        <div class="cue-sub" id="cue-sub"></div>
+        <div class="cue-track"><div class="cue-fill" id="cue-fill"></div></div>
       </div>
-      <div class="hint" id="pred-samples"></div>
-      <div class="hint" id="rtt"></div>
-    </section>
-    <section>
-      <h2>Features sent to the hub (×1000)</h2>
-      <div class="row" style="margin-bottom:8px">
-        <select id="feature-type">
-          <option value="gest_blend">blendshapes (MediaPipe face scores)</option>
-          <option value="gest_lmk">landmark distances</option>
+    </div>
+    <p class="caption" id="camera-caption">Shown mirrored. The dots mark the face points the numbers are measured from.</p>
+  </section>
+
+  <section class="panel readout" aria-label="Live gesture" id="step-use">
+    <div class="step-head"><span class="step-num">4</span><h2>Use it</h2></div>
+    <div>
+      <div class="word idle" id="pred-label">No gesture yet</div>
+      <div class="sure" id="pred-conf"></div>
+    </div>
+    <div class="split" aria-hidden="true"><i class="s0" id="bar-0"></i><i class="s1" id="bar-1"></i><i class="s2" id="bar-2"></i></div>
+    <div class="legend"><span class="l0">neutral<b id="barv-0"></b></span><span class="l1">eyebrows up<b id="barv-1"></b></span><span class="l2">smile<b id="barv-2"></b></span></div>
+    <p class="source" id="pred-samples"></p>
+    <div class="mix">
+      <label for="lambda">How much other people's calibration counts</label>
+      <div class="scale"><span>only mine</span><input type="range" id="lambda" min="0" max="2" step="0.1" value="1"><span id="lambda-value">same as mine</span></div>
+      <p class="note">0 uses only your samples. At 1, everyone's samples count as much as yours.</p>
+    </div>
+  </section>
+
+  <section class="panel steps" aria-label="Setup">
+    <div class="step" id="step-connect">
+      <div class="step-head"><span class="step-num">1</span><h2>Connect a hub</h2></div>
+      <p class="lead">Plug a hub into this laptop with USB. No hub? Try three simulated ones.</p>
+      <div class="row">
+        <button class="btn primary" id="connect-serial">Connect hub</button>
+        <button class="btn" id="reconnect" hidden>Reconnect</button>
+        <button class="btn quiet" id="connect-sim">Simulate hubs</button>
+      </div>
+      <p class="status-line" id="connect-status"></p>
+    </div>
+    <div class="step" id="step-you">
+      <div class="step-head"><span class="step-num">2</span><h2>Say who you are</h2></div>
+      <p class="lead">Pick a number and remember it. Any hub finds your calibration by it.</p>
+      <div class="row">
+        <input class="field" type="number" id="user-id" min="1" max="65535" placeholder="1 to 65535" aria-label="Your number">
+        <button class="btn" id="user-set">Use this number</button>
+        <button class="btn quiet small" id="user-random">Pick one for me</button>
+      </div>
+      <p class="status-line" id="user-epoch"></p>
+      <hr class="divider">
+      <button class="btn danger small" id="delete-start">Delete my data from every hub</button>
+      <div class="confirm" id="delete-confirm" hidden>
+        Delete all calibration for person <b id="delete-who"></b> on every hub, including hubs that are offline now? This can't be undone.
+        <div class="row" style="margin-top:10px"><button class="btn solid-danger small" id="delete-yes">Delete</button><button class="btn small" id="delete-cancel">Keep my data</button></div>
+      </div>
+      <p class="status-line" id="delete-status"></p>
+    </div>
+    <div class="step" id="step-calib">
+      <div class="step-head"><span class="step-num">3</span><h2>Calibrate</h2></div>
+      <p class="lead">Make three faces, about 3 seconds each, when the camera image tells you: neutral, eyebrows up, smile.</p>
+      <div class="row">
+        <button class="btn primary" id="calib-all">Calibrate</button>
+        <button class="btn" id="calib-stop" hidden>Stop</button>
+      </div>
+      <p class="status-line" id="calib-prompt"></p>
+      <p class="note">Add more of one face:</p>
+      <div class="row" style="margin-top:6px">
+        <button class="btn small" id="calib-0">neutral</button><button class="btn small" id="calib-1">eyebrows up</button><button class="btn small" id="calib-2">smile</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel mesh" aria-label="Mesh">
+    <div>
+      <h2>The mesh</h2>
+      <p class="lead" id="self-text">Connect a hub to see the other hubs it can hear.</p>
+    </div>
+    <div id="mesh-live" hidden>
+    <svg id="mesh-svg" viewBox="0 0 320 120" role="img" aria-label="Hubs in radio range"></svg>
+    <div class="key">
+      <span><svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#15222c"/></svg>your hub</span>
+      <span><svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#2f5bea"/></svg>same data</span>
+      <span><svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="#fff" stroke="#c98a12" stroke-width="2"/></svg>catching up</span>
+      <span><svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="#fff" stroke="#94a1ab" stroke-width="1.5" stroke-dasharray="2 2"/></svg>offline</span>
+    </div>
+    <table>
+      <thead><tr><th>Hub</th><th>Data</th><th>Signal</th><th class="num">Packets/s</th></tr></thead>
+      <tbody id="peers"><tr class="empty-row"><td colspan="4">No other hubs heard yet.</td></tr></tbody>
+    </table>
+    </div>
+    <div class="sim" id="sim-panel" hidden>
+      <p>Three simulated hubs in a line: A and C can only reach each other through B. The radio loses 10% of packets.</p>
+      <div class="row"><span class="label">Cable plugged into</span><span class="row" id="sim-attach"></span></div>
+      <div class="row"><span class="label">Radio links (click to cut)</span><span class="row" id="sim-links"></span></div>
+    </div>
+    <div>
+      <h2>Stored on this hub</h2>
+      <p class="lead" id="mine-text">Choose your number to see your calibration.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Made at</th><th>Kind</th><th>Person</th><th class="num">Samples</th></tr></thead>
+          <tbody id="slots"><tr class="empty-row"><td colspan="4">Nothing yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel more" aria-label="More">
+    <details>
+      <summary>What the hub receives</summary>
+      <div class="row" style="margin-bottom:10px">
+        <select class="field" id="feature-type" aria-label="Feature type">
+          <option value="gest_blend">MediaPipe face scores</option>
+          <option value="gest_lmk">Distances between face points</option>
         </select>
       </div>
       <div id="features"></div>
-      <p class="hint">Calibration always records both kinds, so switching here is instant.</p>
-    </section>
-  </div>
-
-  <div class="col">
-    <section>
-      <h2>You</h2>
-      <div class="row">
-        <input type="number" id="user-id" min="1" max="65535" placeholder="user number">
-        <button id="user-set">Set</button>
-        <button id="user-random" title="Pick a random number">Random</button>
-      </div>
-      <p class="hint">Remember your number: it's how any hub finds your calibration. <span id="user-epoch"></span></p>
-    </section>
-    <section>
-      <h2>Calibrate</h2>
-      <p class="muted" style="margin:0">Hold each face for about 3 seconds when asked: neutral, eyebrows up, smile.</p>
-      <div class="prompt" id="calib-prompt"></div>
-      <progress id="calib-progress" value="0" max="1"></progress>
-      <div class="row" style="margin-top:8px">
-        <button id="calib-all" class="primary">Calibrate all three</button>
-        <button id="calib-stop" hidden>Stop</button>
-      </div>
-      <div class="row" style="margin-top:6px">
-        <span class="muted">add more:</span>
-        <button id="calib-0">neutral</button><button id="calib-1">eyebrows up</button><button id="calib-2">smile</button>
-      </div>
-    </section>
-    <section>
-      <h2>Mix with other people (λ)</h2>
-      <label class="slider"><input type="range" id="lambda" min="0" max="2" step="0.1" value="1"><span id="lambda-value">1.0</span></label>
-      <p class="hint">Model = λ × (everyone else's calibration) + yours. 0 = only yours; 1 = everyone counts like you.</p>
-    </section>
-    <section>
-      <h2>Delete my data</h2>
-      <button id="delete-start" class="danger">Delete my data on every hub</button>
-      <div class="confirm" id="delete-confirm" hidden>
-        Delete everything user <b id="delete-who"></b> calibrated, on every hub, including hubs that are offline right now?
-        <div class="row" style="margin-top:8px"><button id="delete-yes" class="danger">Yes, delete</button><button id="delete-cancel">Cancel</button></div>
-      </div>
-      <p class="hint" id="delete-status"></p>
-    </section>
-    <section>
-      <h2>Recorder (for experiments)</h2>
-      <label class="row"><input type="checkbox" id="record-consent"> I agree to save my face features (numbers only, never images) to a folder on this laptop.</label>
-      <div class="row" style="margin-top:6px"><button id="record-folder" disabled>Choose folder…</button></div>
-      <p class="hint" id="record-status">Recording is off.</p>
-    </section>
-  </div>
-
-  <div class="col">
-    <section>
-      <h2>Mesh</h2>
-      <div><span class="swatch" id="self-swatch"></span><span id="self-text" class="mono">no hub yet</span></div>
-      <table style="margin-top:8px">
-        <thead><tr><th>hub</th><th>state</th><th>signal</th><th>traffic</th><th title="heartbeats / inventory / requests / chunks in the last second">hb/inv/req/chunk</th><th>heard</th></tr></thead>
-        <tbody id="peers"><tr><td colspan="6" class="muted">No other hubs heard yet.</td></tr></tbody>
-      </table>
-      <p class="hint">Same color = identical state. The hub hears every packet in radio range, including packets meant for other hubs.</p>
-    </section>
-    <section id="sim-panel" hidden>
-      <h2>Simulated mesh</h2>
-      <p class="muted" style="margin-top:0">Three hubs in a line: A and C only meet through B. The radio drops 10% of packets.</p>
-      <div class="row"><span class="muted">cable plugged into hub:</span><span class="row" id="sim-attach"></span></div>
-      <div class="row" style="margin-top:6px"><span class="muted">radio links:</span><span class="row" id="sim-links"></span></div>
-    </section>
-    <section>
-      <h2>Calibration stored on this hub</h2>
-      <p class="muted" style="margin-top:0" id="mine-text"></p>
-      <div class="scroll">
-        <table>
-          <thead><tr><th>made at</th><th>kind</th><th>user</th><th>samples</th><th>slot</th></tr></thead>
-          <tbody id="slots"></tbody>
-        </table>
-      </div>
-    </section>
-    <section>
-      <h2>Timing</h2>
-      <div class="row"><button id="timing-read">Hub timing</button><button id="timing-reset">Reset</button></div>
-      <p class="hint" id="timing"></p>
-    </section>
-    <section>
-      <h2>Log</h2>
+      <p class="note">Calibration records both kinds for every frame, so switching is instant.</p>
+    </details>
+    <details>
+      <summary>Speed</summary>
+      <p class="note" id="rtt" style="margin-top:0">No predictions yet.</p>
+      <div class="row" style="margin-top:10px"><button class="btn small" id="timing-read">Ask the hub</button><button class="btn small quiet" id="timing-reset">Start over</button></div>
+      <p class="note" id="timing"></p>
+    </details>
+    <details>
+      <summary>Record for experiments</summary>
+      <label class="check"><input type="checkbox" id="record-consent"> I agree to save my face numbers (never images) to a folder on this laptop.</label>
+      <div class="row" style="margin-top:10px"><button class="btn small" id="record-folder" disabled>Choose folder</button></div>
+      <p class="note" id="record-status">Not recording.</p>
+    </details>
+    <details>
+      <summary>Hub log</summary>
       <ol class="log" id="log"></ol>
-    </section>
-  </div>
-</div>
+    </details>
+  </section>
+</main>
 
 <script src="playground/meshstate_wasm.js"></script>
 <script type="module" src="app.js"></script>
