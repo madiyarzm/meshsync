@@ -1,4 +1,4 @@
-// construct: hands-free controller page (Phase D: face gestures).
+// meshsync: hands-free controller page (Phase D: face gestures).
 // The webcam runs MediaPipe here in the page; only 12 numbers per frame go to the hub, over
 // USB serial (Web Serial) or to a simulated hub (the same C++ compiled to WebAssembly).
 // The hub keeps all calibration. This page stores none of it.
@@ -973,7 +973,7 @@ if (!('serial' in navigator)) {
 }
 
 // For debugging in the console. feed() stands in for the camera (tests without a webcam).
-window.construct = {
+window.meshsync = {
   state,
   hub,
   feed(features) {

@@ -1,4 +1,4 @@
-// construct hub firmware for the ESP32. Two apps, chosen with APP_MODE in config.h:
+// meshsync hub firmware for the ESP32. Two apps, chosen with APP_MODE in config.h:
 //   APP_FACE   - webcam gestures + gaze: the browser page talks to this hub over USB serial
 //                (protocol in face_app.h); ESP-NOW sync; flash persistence. The mesh side runs
 //                on core 0, so syncing never holds up a live prediction on core 1.

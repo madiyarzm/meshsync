@@ -9,7 +9,7 @@ static const char WEB_PAGE[] = R"HTML(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>construct hub</title>
+<title>meshsync hub</title>
 <style>
   :root { --ink: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --accent: #0a66c2; --bg: #f5f5f7; --card: #fff; }
   * { box-sizing: border-box; }

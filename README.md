@@ -1,4 +1,4 @@
-# construct
+# meshsync
 
 Offline federated learning over a mesh of ESP32 boards, synced with a CRDT over ESP-NOW.
 

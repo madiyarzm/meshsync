@@ -1,4 +1,4 @@
-"""Python prototype of the construct core: slots, teach, merge, and the two models.
+"""Python prototype of the meshsync core: slots, teach, merge, and the two models.
 
 The model code uses plain loops in a fixed order on purpose: the C++ port
 (Phase 3) repeats the same operations in the same order, so both produce
