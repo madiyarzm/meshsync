@@ -68,11 +68,12 @@ void test_crc_and_packets() {
     TEST_ASSERT_EQUAL_HEX32(crc32(check, 9), crc32_update(crc32(check, 4), check + 4, 5));
 
     uint8_t packet[MAX_PACKET_BYTES];
-    HeartbeatPacket heartbeat = {2, 1, 300, 0xABCD1234};
+    HeartbeatPacket heartbeat = {2, 1, 300, 0xABCD1234, 0x05};
     size_t length = write_heartbeat(heartbeat, packet, sizeof(packet));
     HeartbeatPacket heartbeat_back;
     TEST_ASSERT_TRUE(read_heartbeat(packet, length, heartbeat_back));
     TEST_ASSERT_EQUAL_HEX32(0xABCD1234, heartbeat_back.digest);
+    TEST_ASSERT_EQUAL_HEX8(0x05, heartbeat_back.heard);
     TEST_ASSERT_FALSE(read_heartbeat(packet, length - 1, heartbeat_back));
 
     static InventoryPacket page;

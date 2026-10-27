@@ -29,8 +29,9 @@ struct HeartbeatPacket {
     uint8_t app;  // peers running a different app ignore each other
     uint16_t entries;
     uint32_t digest;
+    uint8_t heard;  // bit i = device i was heard in the last PEER_ONLINE_MS (draws the mesh map)
 };
-constexpr size_t HEARTBEAT_BYTES = 10;
+constexpr size_t HEARTBEAT_BYTES = 11;
 
 struct InventoryRequestPacket {
     uint8_t sender;
@@ -145,6 +146,7 @@ struct PeerStatus {
     uint32_t digest;
     uint16_t entries;
     uint32_t last_inventory_ms;
+    uint8_t heard;  // which devices this peer hears (from its heartbeat)
 };
 
 class SyncEngine {
@@ -161,6 +163,7 @@ public:
     const SyncStats& stats() const { return stats_; }
     const PeerStatus& peer(int id) const { return peers_[id]; }
     bool peer_online(int id, uint32_t now_ms) const;
+    uint8_t heard_mask(uint32_t now_ms) const;  // bit i = peer i online
     bool syncing() const { return transfer_.active || fetch_.active || wanted_count_ > 0; }
 
 private:

@@ -242,9 +242,9 @@ void test_mesh_monitor() {
     output_count = 0;
     apps[0].tick(1000);
     TEST_ASSERT_EQUAL(2, output_count);
-    TEST_ASSERT_EQUAL_STRING("0 EVENT MESH 00000000 0 0 0 0 1 10", output[0]);
+    TEST_ASSERT_EQUAL_STRING("0 EVENT MESH 00000000 0 0 0 0 1 11 00", output[0]);
     // No sync engine attached here, so online/digest come out as 0.
-    TEST_ASSERT_EQUAL_STRING("0 EVENT PEER B 2 0 400 -45 2 20 2 0 0 0 00000000 0", output[1]);
+    TEST_ASSERT_EQUAL_STRING("0 EVENT PEER B 2 0 400 -45 2 22 2 0 0 0 00000000 0 00", output[1]);
     output_count = 0;
     apps[0].tick(1500);  // not a second yet
     TEST_ASSERT_EQUAL(0, output_count);

@@ -622,10 +622,10 @@ void FaceApp::tick(uint32_t now_ms) {
         return;
     }
     last_report_ms_ = now_ms;
-    event("0 EVENT MESH %08lx %d %d %d %d %lu %lu", (unsigned long)replica_->digest(),
+    event("0 EVENT MESH %08lx %d %d %d %d %lu %lu %02x", (unsigned long)replica_->digest(),
           replica_->slot_count() + replica_->tombstone_count() + replica_->user_count(), replica_->slot_count(),
           replica_->tombstone_count(), sync_ != nullptr && sync_->syncing() ? 1 : 0, (unsigned long)tx_packets_,
-          (unsigned long)tx_bytes_);
+          (unsigned long)tx_bytes_, unsigned(sync_ != nullptr ? sync_->heard_mask(now_ms) : 0));
     tx_packets_ = 0;
     tx_bytes_ = 0;
     for (int id = 0; id < MAX_DEVICES; id++) {
@@ -637,11 +637,12 @@ void FaceApp::tick(uint32_t now_ms) {
         bool online = sync_ != nullptr && sync_->peer_online(id, now_ms);
         uint32_t digest = sync_ != nullptr ? sync_->peer(id).digest : 0;
         unsigned entries = sync_ != nullptr ? sync_->peer(id).entries : 0;
-        event("0 EVENT PEER %c %u %d %lu %d %lu %lu %lu %lu %lu %lu %08lx %u", 'A' + id, unsigned(peer.app),
+        unsigned heard = sync_ != nullptr ? sync_->peer(id).heard : 0;
+        event("0 EVENT PEER %c %u %d %lu %d %lu %lu %lu %lu %lu %lu %08lx %u %02x", 'A' + id, unsigned(peer.app),
               online ? 1 : 0, (unsigned long)(now_ms - peer.last_ms), rssi, (unsigned long)peer.packets,
               (unsigned long)peer.bytes, (unsigned long)peer.by_type[1],
               (unsigned long)(peer.by_type[2] + peer.by_type[3]), (unsigned long)peer.by_type[4],
-              (unsigned long)peer.by_type[5], (unsigned long)digest, entries);
+              (unsigned long)peer.by_type[5], (unsigned long)digest, entries, heard);
         peer.packets = 0;
         peer.bytes = 0;
         peer.rssi_sum = 0;

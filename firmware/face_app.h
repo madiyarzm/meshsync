@@ -28,9 +28,10 @@
 // Unprompted lines use id 0:
 //   0 BOOT <letter> <protocol> <app>       after every reset
 //   0 EVENT SLOT <key> / TOMBSTONE <key> / USER_DELETED <user> <counter>   from the mesh
-//   0 EVENT MESH <digest> <entries> <slots> <tombstones> <syncing> <tx_packets> <tx_bytes>   every second
-//   0 EVENT PEER <letter> <app> <online> <age_ms> <rssi> <packets> <bytes> <hb> <inv> <req> <chunk> <digest> <entries>
-//     every second for each board heard in the last minute; counts cover the last second, rssi 0 = unknown
+//   0 EVENT MESH <digest> <entries> <slots> <tombstones> <syncing> <tx_packets> <tx_bytes> <heard>   every second
+//   0 EVENT PEER <letter> <app> <online> <age_ms> <rssi> <packets> <bytes> <hb> <inv> <req> <chunk> <digest> <entries> <heard>
+//     every second for each board heard in the last minute; counts cover the last second, rssi 0 = unknown,
+//     <heard> = hex bit mask of the boards that board hears (bit 0 = A), so the page can draw every link
 // Lines starting with '#' are logs; the page ignores them.
 
 #include <cstdarg>

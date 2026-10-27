@@ -40,6 +40,7 @@ size_t write_heartbeat(const HeartbeatPacket& packet, uint8_t* out, size_t capac
     write_u8(out, packet.app);
     write_u16(out, packet.entries);
     write_u32(out, packet.digest);
+    write_u8(out, packet.heard);
     return HEARTBEAT_BYTES;
 }
 
@@ -52,6 +53,7 @@ bool read_heartbeat(const uint8_t* data, size_t length, HeartbeatPacket& out) {
     out.app = read_u8(in);
     out.entries = read_u16(in);
     out.digest = read_u32(in);
+    out.heard = read_u8(in);
     return true;
 }
 
@@ -221,6 +223,16 @@ bool SyncEngine::peer_online(int id, uint32_t now_ms) const {
     return now_ms - peers_[id].last_seen_ms < PEER_ONLINE_MS;
 }
 
+uint8_t SyncEngine::heard_mask(uint32_t now_ms) const {
+    uint8_t mask = 0;
+    for (int id = 0; id < MAX_DEVICES; id++) {
+        if (peer_online(id, now_ms)) {
+            mask = uint8_t(mask | (1u << id));
+        }
+    }
+    return mask;
+}
+
 void SyncEngine::send_packet(size_t length) {
     if (length == 0) {
         return;
@@ -254,6 +266,7 @@ void SyncEngine::tick(uint32_t now_ms) {
         heartbeat.app = app_;
         heartbeat.entries = uint16_t(replica_->slot_count() + replica_->tombstone_count() + replica_->user_count());
         heartbeat.digest = replica_->digest();
+        heartbeat.heard = heard_mask(now_ms);
         send_packet(write_heartbeat(heartbeat, packet_, sizeof(packet_)));
         last_heartbeat_ms_ = now_ms;
     }
@@ -323,6 +336,7 @@ void SyncEngine::handle_heartbeat(const HeartbeatPacket& packet, uint32_t now_ms
     peer.last_seen_ms = now_ms;
     peer.digest = packet.digest;
     peer.entries = packet.entries;
+    peer.heard = packet.heard;
 
     if (packet.digest == replica_->digest() || fetch_.active) {
         return;  // same state, or already reading someone's inventory
