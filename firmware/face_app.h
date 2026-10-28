@@ -9,6 +9,9 @@
 //
 //   <id> HELLO 1                           -> <id> OK HELLO <letter> <protocol> <max_slots>
 //   <id> USER <user>                       -> <id> OK USER <user> <deletion counter>
+//   <id> NEW_USER                          -> <id> OK NEW_USER <user>   a fresh person number, made active:
+//     (device+1)*1000 + n, shown as "A3". The letter keeps numbers unique without asking other hubs.
+//   <id> COUNTS gest_blend|gest_lmk        -> <id> OK COUNTS <type> <own0> <own1> <own2> <others0> <others1> <others2>
 //     (HELLO and USER close and save the sessions opened before, so a page that went away
 //      without closing can't use up the hub's open sessions)
 //   <id> SESSION gest_blend|gest_lmk|gaze  -> <id> OK SESSION <session>
@@ -102,6 +105,9 @@ private:
     void refresh_model(meshstate::PayloadType type);
 
     void cmd_user(uint16_t id, char** args, int count);
+    void cmd_new_user(uint16_t id);
+    void cmd_counts(uint16_t id, char** args, int count);
+    bool user_known(uint16_t user) const;
     void cmd_session(uint16_t id, char** args, int count);
     void cmd_add(uint16_t id, char** args, int count);
     void cmd_close(uint16_t id, char** args, int count);

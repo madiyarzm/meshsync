@@ -259,6 +259,10 @@ void FaceApp::handle_line(char* line, uint32_t now_ms) {
         reply(id, "HELLO %c %d %d", letter_, FACE_PROTOCOL, MAX_SLOTS);
     } else if (std::strcmp(command, "USER") == 0) {
         cmd_user(id, args, arg_count);
+    } else if (std::strcmp(command, "NEW_USER") == 0) {
+        cmd_new_user(id);
+    } else if (std::strcmp(command, "COUNTS") == 0) {
+        cmd_counts(id, args, arg_count);
     } else if (std::strcmp(command, "SESSION") == 0) {
         cmd_session(id, args, arg_count);
     } else if (std::strcmp(command, "ADD") == 0) {
@@ -295,6 +299,53 @@ void FaceApp::close_opened_sessions() {
         replica_->close_session(opened_[i]);  // UnknownSession if it was deleted: nothing to save
     }
     opened_count_ = 0;
+}
+
+// A number is taken if any saved slot belongs to it, or it was ever deleted (has a counter).
+bool FaceApp::user_known(uint16_t user) const {
+    for (int i = 0; i < replica_->slot_count(); i++) {
+        if (replica_->slot_header(i).user == user) {
+            return true;
+        }
+    }
+    return replica_->user_epoch(user) > 0;
+}
+
+// Person numbers are (device + 1) * 1000 + n, so only this hub ever hands out its range.
+// A number given to someone who never calibrated can be given again: there's no data behind it.
+void FaceApp::cmd_new_user(uint16_t id) {
+    close_opened_sessions();  // the previous person's samples are saved first, so they count as taken
+    uint16_t base = uint16_t((replica_->device_id() + 1) * 1000);
+    for (uint16_t n = 1; n < 1000; n++) {
+        uint16_t user = uint16_t(base + n);
+        if (!user_known(user)) {
+            replica_->set_active_user(user);
+            local_changes_++;
+            last_label_ = -1;
+            reply(id, "NEW_USER %u", unsigned(user));
+            return;
+        }
+    }
+    error(id, "USERS_FULL");
+}
+
+// Samples per gesture: the active person's own, and everyone else's.
+void FaceApp::cmd_counts(uint16_t id, char** args, int count) {
+    PayloadType type;
+    if (count != 1 || !parse_type(args[0], type) || type == PayloadType::Gaze) {
+        error(id, "BAD_LINE");
+        return;
+    }
+    const GestureTotals& all = replica_->gesture_totals(type, false);
+    const GestureTotals& own = replica_->gesture_totals(type, true);
+    long mine[GESTURE_CLASSES];
+    long others[GESTURE_CLASSES];
+    for (int c = 0; c < GESTURE_CLASSES; c++) {
+        mine[c] = long(own.count(c));
+        others[c] = long(all.count(c) - own.count(c));
+    }
+    reply(id, "COUNTS %s %ld %ld %ld %ld %ld %ld", TYPE_NAMES[model_index(type)], mine[0], mine[1], mine[2], others[0],
+          others[1], others[2]);
 }
 
 void FaceApp::cmd_user(uint16_t id, char** args, int count) {

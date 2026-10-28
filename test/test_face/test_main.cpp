@@ -211,6 +211,20 @@ void test_slots_and_status() {
     TEST_ASSERT_EQUAL(0, std::strncmp(send(0, "3 STATUS"), "3 OK STATUS letter=A user=7 epoch=0 lambda=1000 slots=1", 55));
 }
 
+// New people get short numbers in this hub's own range; numbers with data are never reused.
+void test_new_user_numbers() {
+    TEST_ASSERT_EQUAL_STRING("1 OK NEW_USER 1001", send(0, "1 NEW_USER"));
+    calibrate(0, 5);
+    TEST_ASSERT_EQUAL_STRING("2 OK COUNTS gest_blend 5 5 5 0 0 0", send(0, "2 COUNTS gest_blend"));
+    TEST_ASSERT_EQUAL_STRING("3 OK NEW_USER 1002", send(0, "3 NEW_USER"));  // 1001 has data now
+    TEST_ASSERT_EQUAL_STRING("4 OK COUNTS gest_blend 0 0 0 5 5 5", send(0, "4 COUNTS gest_blend"));
+    TEST_ASSERT_EQUAL_STRING("5 OK NEW_USER 1002", send(0, "5 NEW_USER"));  // 1002 never calibrated: free
+    send(0, "6 DELETE_USER 1002");
+    TEST_ASSERT_EQUAL_STRING("7 OK NEW_USER 1003", send(0, "7 NEW_USER"));  // a deleted number stays taken
+    TEST_ASSERT_EQUAL_STRING("8 OK NEW_USER 2001", send(1, "8 NEW_USER"));  // hub B has its own range
+    TEST_ASSERT_EQUAL_STRING("9 ERR BAD_LINE", send(0, "9 COUNTS gaze"));
+}
+
 // A page that went away without CLOSE must not use up the hub's two open sessions.
 void test_new_page_or_user_closes_old_sessions() {
     send(0, "1 USER 7");
@@ -285,6 +299,7 @@ int main() {
     RUN_TEST(test_gaze_session);
     RUN_TEST(test_slots_and_status);
     RUN_TEST(test_new_page_or_user_closes_old_sessions);
+    RUN_TEST(test_new_user_numbers);
     RUN_TEST(test_mesh_monitor);
     RUN_TEST(test_predict_never_waits_for_the_mesh);
     return UNITY_END();
