@@ -253,6 +253,11 @@ const state = {
   calibrating: false,
   cancel: false,
   skippedCalibration: false,
+  counts: { mine: [0, 0, 0], others: [0, 0, 0] },  // samples per face on this hub (COUNTS)
+  recording: { label: -1, count: 0 },              // the face being recorded right now
+  activity: [],                                    // recent mesh events, newest first
+  tracker: null,                                   // { what, since, digest, reported: {letter} }
+  slotNotes: {},                                   // key -> last time we announced it
   setupOpen: false,      // the person asked to see the setup steps again
   features: null,        // latest from the camera
   featuresAt: 0,
@@ -300,6 +305,21 @@ function showCue(text, sub, fraction) {
 
 function hideCue() {
   $('cue').hidden = true;
+}
+
+// Person numbers from the hub are (hub + 1) * 1000 + n, shown as "A3". Older numbers show as-is.
+function personLabel(user) {
+  const hub = Math.floor(user / 1000) - 1;
+  const n = user % 1000;
+  return hub >= 0 && hub < 8 && n > 0 ? `${String.fromCharCode(65 + hub)}${n}` : String(user);
+}
+
+function parsePerson(text) {
+  const t = text.trim().toUpperCase();
+  const match = /^([A-H])\s*(\d{1,3})$/.exec(t);
+  if (match && +match[2] > 0) return (match[1].charCodeAt(0) - 64) * 1000 + Number(match[2]);
+  if (/^\d{1,5}$/.test(t) && +t >= 1 && +t <= 65535) return Number(t);
+  return 0;
 }
 
 function plural(n, word) {
@@ -378,6 +398,7 @@ function handleEvent(text) {
       txPackets: +f[7], txBytes: +f[8], heard: parseInt(f[9] || '0', 16), at: performance.now() };
     pruneOldPeers();
     checkDeletion();
+    checkTracker();
     renderMesh(true);
     renderData();
   } else if (f[0] === 'EVENT' && f[1] === 'PEER') {
@@ -386,6 +407,7 @@ function handleEvent(text) {
       heard: parseInt(f[15] || '0', 16), at: performance.now() };
   } else if (f[0] === 'EVENT' && f[1] === 'SLOT') {
     log(`received calibration ${f[2]} from the mesh`);
+    state.pendingSlots = [...(state.pendingSlots || []), f[2]];
     refreshSlotsSoon();
   } else if (f[0] === 'EVENT' && f[1] === 'TOMBSTONE') {
     log(`a deletion arrived: slot ${f[2]}`);
@@ -418,12 +440,53 @@ async function sendUser() {
   if (r.ok) {
     state.epoch = +r.fields[2];
     state.sessions = {};
-    log(`person ${state.user} at hub ${state.hubLetter}`);
+    log(`person ${personLabel(state.user)} at hub ${state.hubLetter}`);
   } else {
     log(`USER failed: ${r.code}`);
   }
+  await refreshCounts();
   refreshSlotsSoon();
   render();
+}
+
+function choosePerson(user) {
+  showPrompt('');
+  state.user = user;
+  state.deletion = null;
+  state.skippedCalibration = false;
+  $('delete-status').textContent = '';
+  if (state.connected) sendUser();
+  render();
+}
+
+// The hub picks the number, so it's short and can't clash with other hubs' people.
+async function newPerson() {
+  const r = await hub.request('NEW_USER');
+  if (!r.ok) {
+    $('user-epoch').textContent = r.code === 'USERS_FULL' ? 'This hub has handed out all its IDs.' : `The hub answered ${r.code}.`;
+    $('user-epoch').className = 'status-line bad';
+    return;
+  }
+  showPrompt('');
+  state.user = +r.fields[1];
+  state.epoch = 0;
+  state.sessions = {};
+  state.deletion = null;
+  state.skippedCalibration = false;
+  $('delete-status').textContent = '';
+  log(`new person ${personLabel(state.user)} at hub ${state.hubLetter}`);
+  await refreshCounts();
+  render();
+}
+
+async function refreshCounts() {
+  if (!state.connected) return;
+  const r = await hub.request('COUNTS gest_blend');
+  if (!r.ok) return;
+  // COUNTS <type> <own0> <own1> <own2> <others0> <others1> <others2>
+  // fields: COUNTS <type> <own0> <own1> <own2> <others0> <others1> <others2>
+  state.counts = { mine: r.fields.slice(2, 5).map(Number), others: r.fields.slice(5, 8).map(Number) };
+  renderFaces();
 }
 
 async function ensureSessions() {
@@ -481,6 +544,8 @@ async function calibrate(classes) {
         await sleep(1000);
       }
       let count = 0;
+      state.recording = { label, count: 0 };
+      renderFaces();
       const started = performance.now();
       let next = performance.now();
       while (count < SAMPLES_PER_CLASS && !state.cancel) {
@@ -497,22 +562,29 @@ async function calibrate(classes) {
         const r = await addSample(label, features);
         if (!r.ok) throw new Error(`The hub refused a sample: ${r.code}`);
         count++;
+        state.recording.count = count;
+        renderFaces();
         showCue(INSTRUCTIONS[label], 'Hold it', count / SAMPLES_PER_CLASS);
         showPrompt(`Recording: ${INSTRUCTIONS[label].toLowerCase()}.`);
         rows.push([Date.now(), state.user, state.hubLetter, 'gesture', label, '', '', ...features.blend, ...features.landmark]);
       }
+      state.recording = { label: -1, count: 0 };
+      await refreshCounts();  // the finished face's tile shows its new total right away
     }
     if (state.cancel) {
       showPrompt('Stopped. The samples recorded so far are kept.', 'warn');
     } else {
-      showPrompt(`Done. Hub ${state.hubLetter} has your calibration and passes it to the other hubs within a few seconds.`, 'ok');
+      showPrompt(`Done. Hub ${state.hubLetter} has your faces now and passes them to the other hubs. Watch the mesh on the right.`, 'ok');
       state.setupOpen = false;
     }
   } catch (error) {
     showPrompt(error.message, 'bad');
   } finally {
     state.calibrating = false;
+    state.recording = { label: -1, count: 0 };
     hideCue();
+    if (rows.length) startTracking(`${personLabel(state.user)}'s new calibration`);
+    await refreshCounts();
     render();
     refreshSlotsSoon();
     if (rows.length && state.recordDir) await saveRecording(rows);
@@ -625,40 +697,91 @@ function recordTraffic(direction, line) {
 }
 
 function escapeHtml(text) {
-  return text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+const token = (value, caption, kind = '') =>
+  `<span class="token ${kind}"><code>${escapeHtml(value)}</code><small>${escapeHtml(caption)}</small></span>`;
+
+// The request split into its parts, each with a caption saying what it is.
+function describeRequest(line) {
+  const f = line.split(' ');
+  const kinds = { gest_blend: 'face scores', gest_lmk: 'face distances', gaze: 'gaze' };
+  if (f[1] === 'PREDICT') {
+    return token(f[0], 'message no.') + token('PREDICT', 'guess my face') + token(f[2], kinds[f[2]] || 'kind')
+      + token(f.slice(3).join(' '), '12 numbers ×1000');
+  }
+  // ADD <session> <label> <12 numbers>
+  return token(f[0], 'message no.') + token('ADD', 'learn this') + token(f[2], 'session')
+    + token(GESTURES[+f[3]] || f[3], 'which face') + token(f.slice(4).join(' '), '12 numbers ×1000');
+}
+
+function describeReply(line) {
+  const f = line.split(' ');
+  if (f[1] === 'ERR') {
+    const why = { NOT_READY: 'nothing learned yet', UNKNOWN_SESSION: 'session ended', BAD_FEATURES: 'numbers out of range' };
+    return token(f[2], why[f[2]] || 'error', 'err');
+  }
+  if (f[2] === 'PREDICT') {
+    // OK PREDICT <type> <label> <p0> <p1> <p2> <own> <others>
+    const label = +f[4];
+    return token(GESTURES[label], 'the board\'s guess', 'answer') + token(`${Math.round(+f[5 + label] / 10)}%`, 'sure', 'answer')
+      + token(`${f[8]} + ${f[9]}`, 'your samples + others\'', 'answer');
+  }
+  if (f[2] === 'ADD') return token(`v${f[3]}`, 'learned; slot version', 'answer');
+  return token(f.slice(1).join(' '), 'reply', 'answer');
 }
 
 let lastWireRender = 0;
 function renderWire() {
   const now = performance.now();
-  if (now - lastWireRender < 150) return;  // readable, not flickering
+  if (now - lastWireRender < 250) return;  // readable, not flickering
   lastWireRender = now;
   state.wire.window = state.wire.window.filter((w) => now - w.at < 1000);
   const perSecond = state.wire.window.reduce((n, w) => n + w.bytes, 0);
-  $('wire-rate').textContent = state.wire.window.length ? `${state.wire.window.length} messages, ${perSecond} bytes in the last second` : '';
+  $('wire-rate').textContent = state.wire.window.length ? `${state.wire.window.length} lines, ${perSecond} bytes per second` : '';
   const out = state.wire.out;
   if (!out) return;
-  const reply = state.wire.reply;
-  $('wire').innerHTML = `<span class="dir">to hub ${escapeHtml(state.hubLetter)} →</span> ${escapeHtml(out)}`
-    + (reply ? `\n<span class="dir">← reply</span> <span class="ok">${escapeHtml(reply)}</span>` : '');
-  $('wire-meta').innerHTML = `<span>This message: <b>${bytesOf(out)} bytes</b></span>`
-    + `<span>One camera frame: <b>${(640 * 480 * 3).toLocaleString('en-US')} bytes</b>, never sent</span>`;
+  $('wire-bytes').textContent = `${bytesOf(out)} bytes`;
+  $('wire-out').innerHTML = describeRequest(out);
+  // Keep the last answer on screen until the next one arrives, so nothing jumps.
+  if (state.wire.reply) {
+    state.wire.shownReply = state.wire.reply;
+  }
+  if (state.wire.shownReply) $('wire-in').innerHTML = describeReply(state.wire.shownReply);
 }
+
+// Plain names for the 12 numbers.
+const READABLE = {
+  browInnerUp: 'inner brows up', browOuterUpLeft: 'left brow up', browOuterUpRight: 'right brow up',
+  browDownLeft: 'left brow down', browDownRight: 'right brow down', mouthSmileLeft: 'smile, left',
+  mouthSmileRight: 'smile, right', cheekSquintLeft: 'left cheek squint', cheekSquintRight: 'right cheek squint',
+  jawOpen: 'jaw open', eyeBlinkLeft: 'left eye closed', eyeBlinkRight: 'right eye closed',
+  browEyeRight: 'right brow height', browEyeLeft: 'left brow height', mouthWidth: 'mouth width',
+  cornerUpRight: 'right corner up', cornerUpLeft: 'left corner up', mouthOpen: 'mouth open',
+  eyeOpenRight: 'right eye open', eyeOpenLeft: 'left eye open', browGap: 'gap between brows',
+  cornerEyeRight: 'right corner to eye', cornerEyeLeft: 'left corner to eye', lowerFace: 'lower face length',
+};
 
 let lastValuesRender = 0;
 function renderValues(features) {
   const now = performance.now();
-  if (now - lastValuesRender < 150) return;
+  if (now - lastValuesRender < 250) return;
   lastValuesRender = now;
-  const names = state.featureType === 'gest_blend' ? BLENDSHAPE_NAMES : LANDMARK_NAMES;
-  const values = features ? (state.featureType === 'gest_blend' ? features.blend : features.landmark) : null;
+  const blend = state.featureType === 'gest_blend';
+  const names = blend ? BLENDSHAPE_NAMES : LANDMARK_NAMES;
+  const values = features ? (blend ? features.blend : features.landmark) : null;
   const el = $('values');
   if (el.children.length !== names.length || el.dataset.type !== state.featureType) {
     el.dataset.type = state.featureType;
-    el.innerHTML = names.map((n) => `<div><span title="${n}">${n}</span><b></b></div>`).join('');
+    el.innerHTML = names.map((n) => `<div><span title="${n}">${READABLE[n] || n}</span><i><u></u></i><b></b></div>`).join('');
   }
+  const scale = blend ? 1000 : 1500;  // face scores are 0-1000; distances mostly under 1.5 eye widths
   for (let i = 0; i < names.length; i++) {
-    el.children[i].querySelector('b').textContent = values ? values[i] : '–';
+    const row = el.children[i];
+    const v = values ? values[i] : 0;
+    row.querySelector('u').style.width = `${Math.min(100, (Math.abs(v) / scale) * 100)}%`;
+    row.querySelector('b').textContent = values ? v : '–';
   }
 }
 
@@ -719,9 +842,16 @@ function renderMesh(spawnPulses) {
   const { links, hubs } = meshGraph();
   const others = hubs.filter((h) => h !== state.hubLetter);
   const same = others.filter((h) => hubState(h) === 'same');
-  $('self-text').textContent = others.length === 0
-    ? `Hub ${state.hubLetter} doesn't hear any other hub yet.`
-    : `Hub ${state.hubLetter} holds ${plural(self.slots, 'calibration slot')}. ${same.length ? `${same.join(' and ')} ${same.length === 1 ? 'has' : 'have'} exactly the same data.` : ''}`;
+  const behind = others.filter((h) => hubState(h) === 'behind');
+  const far = others.filter((h) => hubState(h) === 'far');
+  const list = (letters) => letters.length === 1 ? letters[0] : `${letters.slice(0, -1).join(', ')} and ${letters[letters.length - 1]}`;
+  let headline;
+  if (others.length === 0) headline = `Hub ${state.hubLetter} is on its own. Turn on another hub and they'll find each other.`;
+  else if (behind.length) headline = `${list(behind)} ${behind.length === 1 ? 'is' : 'are'} catching up with hub ${state.hubLetter}…`;
+  else if (same.length) headline = `${list([state.hubLetter, ...same])} hold exactly the same calibration.`;
+  else headline = `Hub ${state.hubLetter} is the only hub in range right now.`;
+  if (far.length && !behind.length) headline += ` ${list(far)} ${far.length === 1 ? 'is' : 'are'} out of ${state.hubLetter}'s range and get${far.length === 1 ? 's' : ''} it through the hubs between.`;
+  $('self-text').textContent = headline;
   $('mesh-note').textContent = self.syncing ? 'syncing now' : '';
 
   // Up to 4 hubs sit in one row in letter order; links that skip a hub arc over it.
@@ -770,7 +900,7 @@ function renderMesh(spawnPulses) {
     const { x, y } = layout[letter];
     const kind = hubState(letter);
     const look = {
-      self: { fill: '#15222c', stroke: '#15222c', text: '#fff', dash: '', sub: 'this laptop' },
+      self: { fill: '#15222c', stroke: '#15222c', text: '#fff', dash: '', sub: 'plugged in' },
       same: { fill: '#2f5bea', stroke: '#2f5bea', text: '#fff', dash: '', sub: 'same data' },
       behind: { fill: '#fff', stroke: '#c98a12', text: '#15222c', dash: '', sub: 'catching up' },
       far: { fill: '#fff', stroke: '#94a1ab', text: '#5d6c78', dash: '4 3', sub: 'out of range' },
@@ -785,10 +915,10 @@ function renderMesh(spawnPulses) {
     if (d && performance.now() - d.startedAt < 20000) {
       badge = d.cleared[letter] !== undefined ? 'deleted ✓' : kind === 'far' ? 'can\'t confirm from here' : 'deleting…';
     } else if (state.user && (kind === 'self' || kind === 'same')) {
-      badge = mine ? `your ${mine} samples` : '';
+      badge = mine ? `${personLabel(state.user)}: ${mine} samples` : '';
     }
     if (badge) {
-      const color = badge.startsWith('deleted') ? '#1d8a52' : badge.startsWith('your') ? '#2f5bea' : '#8a5d00';
+      const color = badge.startsWith('deleted') ? '#1d8a52' : badge.endsWith('samples') ? '#2f5bea' : '#8a5d00';
       nodeLayer.append(svg('text', { x, y: y + 62, 'text-anchor': 'middle', fill: color, style: 'font-size:12px;font-weight:600' }, badge));
     }
     if (kind === 'self') {
@@ -861,9 +991,54 @@ async function refreshSlots() {
   if (!r.ok) return;
   // SLOT <key> <owner> <type> <session> <user> <samples>
   state.mesh.slots = r.lines.map((f) => ({ key: f[0], owner: f[1], type: f[2], session: +f[3], user: +f[4], samples: +f[5] }));
+  for (const key of state.pendingSlots || []) {
+    const slot = state.mesh.slots.find((s) => s.key === key);
+    const last = state.slotNotes[key] || 0;
+    if (slot && slot.type !== 'gest_lmk' && performance.now() - last > 15000) {
+      state.slotNotes[key] = performance.now();
+      addActivity(`Hub ${state.hubLetter} received ${personLabel(slot.user)}'s calibration, recorded at hub ${slot.owner}.`);
+    }
+  }
+  state.pendingSlots = [];
+  if (state.connected) refreshCounts();
   render();
 }
 setInterval(refreshSlots, 3000);
+
+// ---- recent activity: "B has your new calibration (1.3 s)" ----------------------------
+
+function addActivity(text) {
+  const now = new Date();
+  state.activity.unshift({ text, time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), at: performance.now() });
+  state.activity.length = Math.min(state.activity.length, 5);
+  renderActivity();
+}
+
+function renderActivity() {
+  $('activity').hidden = state.activity.length === 0;
+  const now = performance.now();
+  $('activity').innerHTML = state.activity
+    .map((a) => `<li class="${now - a.at < 1500 ? 'fresh' : ''}"><time>${a.time}</time><span>${escapeHtml(a.text)}</span></li>`).join('');
+}
+
+// After a change here, report each hub in range once it holds exactly the same data.
+function startTracking(what) {
+  state.tracker = { what, since: performance.now(), digest: state.mesh.self ? state.mesh.self.digest : '', reported: {} };
+}
+
+function checkTracker() {
+  const t = state.tracker;
+  const self = state.mesh.self;
+  if (!t || !self) return;
+  if (self.digest === t.digest) return;  // our own copy hasn't been saved yet (every 2 s)
+  for (const [letter, p] of Object.entries(state.mesh.peers)) {
+    if (p.app === 2 && p.online && p.digest === self.digest && !t.reported[letter]) {
+      t.reported[letter] = true;
+      addActivity(`Hub ${letter} has ${t.what}, ${((performance.now() - t.since) / 1000).toFixed(1)} s after recording ended.`);
+    }
+  }
+  if (performance.now() - t.since > 30000) state.tracker = null;
+}
 
 async function deleteMyData() {
   $('delete-confirm').hidden = true;
@@ -877,6 +1052,7 @@ async function deleteMyData() {
   state.sessions = {};
   state.epoch = +r.fields[2];
   state.skippedCalibration = true;  // keep the setup folded: there's simply nothing of theirs left
+  addActivity(`Deleted ${personLabel(user)} on hub ${state.hubLetter}. Watch the other hubs confirm.`);
   state.deletion = { user, hub: state.hubLetter, startedAt: performance.now(), removed: +r.fields[1], cleared: { [state.hubLetter]: 0 } };
   log(`deleted person ${user}'s data (counter now ${r.fields[2]})`);
   checkDeletion();
@@ -893,6 +1069,7 @@ function checkDeletion() {
     if (p.app === 2 && p.online && p.digest === state.mesh.self.digest && d.cleared[letter] === undefined) {
       d.cleared[letter] = seconds;
       d.justCleared = letter;
+      addActivity(`Hub ${letter} deleted ${personLabel(d.user)} too, ${seconds.toFixed(1)} s later.`);
     }
   }
   const { hubs } = meshGraph();
@@ -902,15 +1079,15 @@ function checkDeletion() {
   $('delete-status').className = 'status-line ' + (waiting.length ? 'warn' : 'ok');
   $('delete-status').textContent = waiting.length
     ? `Deleted on hub ${d.hub}. Waiting for ${waiting.join(', ')}.`
-    : `Person ${d.user}'s data is gone from all ${inRange.length} hubs in range${hidden ? `; ${hidden} more can't be checked from here` : ''}.`;
+    : `${personLabel(d.user)}'s calibration is gone from all ${inRange.length} hubs in range${hidden ? `; ${hidden} more can't be checked from here` : ''}.`;
 }
 
 function renderData() {
   const d = state.deletion;
   const mine = mySamplesHere();
-  $('data-title').textContent = state.user ? `Person ${state.user} on the mesh` : 'Your data on the mesh';
+  $('data-title').textContent = state.user ? `Where ${personLabel(state.user)}'s calibration is` : 'Where your calibration is';
   $('delete-start').disabled = !(state.connected && state.user > 0) || state.calibrating;
-  $('delete-start').textContent = state.user ? `Delete person ${state.user} from every hub` : 'Delete my data from every hub';
+  $('delete-start').textContent = state.user ? `Delete ${personLabel(state.user)} from every hub` : 'Delete my data from every hub';
   if (!state.connected || !state.mesh.self) {
     $('data-lead').textContent = state.user ? 'Connect a hub to see where your calibration is.' : 'Choose your number to see where your calibration is.';
     $('hubs').innerHTML = '';
@@ -962,7 +1139,7 @@ function renderSlots() {
   const people = new Set(rows.map((s) => s.user)).size;
   $('everything-title').textContent = `Everyone's calibration on hub ${state.hubLetter || ''} (${people === 0 ? 'nobody yet' : people === 1 ? '1 person' : `${people} people`})`;
   $('slots').innerHTML = rows.length
-    ? rows.map((s) => `<tr class="${isMine(s) ? 'mine' : ''}"><td>${s.user}${isMine(s) ? ' (you)' : ''}</td><td>hub ${s.owner}</td><td class="num">${s.samples}</td></tr>`).join('')
+    ? rows.map((s) => `<tr class="${isMine(s) ? 'mine' : ''}"><td>${personLabel(s.user)}${isMine(s) ? ' (you)' : ''}</td><td>hub ${s.owner}</td><td class="num">${s.samples}</td></tr>`).join('')
     : '<tr class="empty-row"><td colspan="3">Nothing yet.</td></tr>';
 }
 
@@ -1126,21 +1303,54 @@ function render() {
   if (state.calibrating) $('step-calib').className = 'step current';
   const folded = next === -1 && !state.setupOpen && !state.calibrating;
   $('setup').hidden = folded;
+  $('setup').className = 'panel steps' + (state.setupOpen && !state.calibrating ? ' open' : '');
   $('setup-summary').hidden = !folded;
   $('sum-hub').textContent = `Hub ${state.hubLetter}`;
-  $('sum-person').textContent = `Person ${state.user}`;
+  $('sum-person').textContent = `You're ${personLabel(state.user)}`;
   $('sum-calib').textContent = calibrated ? `Calibrated, ${mySamplesHere()} samples`
     : state.deletion && state.deletion.user === state.user ? 'Data deleted' : 'Using other people\'s calibration';
 
   const ready = state.connected && state.user > 0 && !state.calibrating;
   for (const id of ['calib-all', 'calib-0', 'calib-1', 'calib-2', 'calib-skip']) $(id).disabled = !ready;
+  $('calib-all').hidden = state.calibrating;
   $('calib-stop').hidden = !state.calibrating;
-  $('calib-skip').hidden = calibrated;
-  $('user-epoch').textContent = state.user ? `You are person ${state.user}.` : '';
+  for (const id of ['person-new', 'person-use']) $(id).disabled = !state.connected || state.calibrating;
+  $('calib-all').textContent = calibrated ? 'Record all three again, about 15 s' : 'Record all three, about 15 s';
+  // Skipping only makes sense if someone else's calibration is on this hub.
+  const othersHere = state.counts.others.reduce((a, b) => a + b, 0);
+  $('skip-row').hidden = calibrated || othersHere === 0 || state.calibrating;
+  $('skip-text').textContent = `Other people have taught this hub ${othersHere} samples.`;
+  $('user-epoch').textContent = state.user ? `You're ${personLabel(state.user)}. At another hub, pick ${personLabel(state.user)} from the list.` : '';
   $('user-epoch').className = 'status-line';
   $('reconnect').hidden = !(state.lastSerialPort && !hub.transport);
+  renderPeople();
+  renderFaces();
   renderData();
   renderSlots();
+}
+
+// People this hub has calibration for, as buttons to pick yourself.
+function renderPeople() {
+  const totals = new Map();
+  for (const s of state.mesh.slots) {
+    if (s.type === 'gest_blend' && s.user) totals.set(s.user, (totals.get(s.user) || 0) + s.samples);
+  }
+  const people = [...totals.entries()].sort((a, b) => personLabel(a[0]).localeCompare(personLabel(b[0]), 'en', { numeric: true }));
+  $('people-block').hidden = people.length === 0;
+  $('people').innerHTML = people.map(([user, samples]) =>
+    `<button class="btn small ${user === state.user ? 'on' : ''}" data-user="${user}">${personLabel(user)}<small>${samples} samples</small></button>`).join('');
+}
+
+// One tile per face: how many samples the hub has of it, and a bar while it records.
+function renderFaces() {
+  for (let c = 0; c < 3; c++) {
+    const recording = state.recording.label === c;
+    const n = state.counts.mine[c] + (recording ? state.recording.count : 0);
+    $('tile-' + c).className = 'face-tile' + (recording ? ' active' : n >= SAMPLES_PER_CLASS ? ' done' : '');
+    $('count-' + c).textContent = recording ? `recording ${state.recording.count} of ${SAMPLES_PER_CLASS}` : n ? `${n} samples` : 'not yet';
+    $('meter-' + c).style.width = `${Math.min(100, (recording ? state.recording.count : n) / SAMPLES_PER_CLASS * 100)}%`;
+    $('calib-' + c).textContent = n ? 'Add more' : 'Record';
+  }
 }
 
 $('connect-serial').onclick = () => connect('serial');
@@ -1158,21 +1368,23 @@ $('reconnect').onclick = async () => {
 };
 $('camera-start').onclick = startCamera;
 $('setup-open').onclick = () => { state.setupOpen = true; render(); };
-$('user-set').onclick = async () => {
-  const value = Number($('user-id').value);
-  if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    $('user-epoch').textContent = 'Use a whole number from 1 to 65535.';
+$('person-new').onclick = newPerson;
+$('people').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (button && !state.calibrating) choosePerson(+button.dataset.user);
+});
+const useTyped = () => {
+  const user = parsePerson($('person-typed').value);
+  if (!user) {
+    $('user-epoch').textContent = 'An ID looks like A3: a hub letter and a number.';
     $('user-epoch').className = 'status-line bad';
     return;
   }
-  state.user = value;
-  state.deletion = null;
-  state.skippedCalibration = false;
-  $('delete-status').textContent = '';
-  if (state.connected) await sendUser();
-  render();
+  $('person-typed').value = '';
+  choosePerson(user);
 };
-$('user-random').onclick = () => { $('user-id').value = 1 + Math.floor(Math.random() * 65535); };
+$('person-use').onclick = useTyped;
+$('person-typed').addEventListener('keydown', (event) => { if (event.key === 'Enter') useTyped(); });
 $('lambda').oninput = () => {
   state.lambda = Number($('lambda').value);
   $('lambda-value').textContent = state.lambda === 0 ? 'none' : state.lambda === 1 ? 'as much as yours' : `${state.lambda.toFixed(1)}× yours`;
@@ -1185,7 +1397,7 @@ for (let c = 0; c < 3; c++) $('calib-' + c).onclick = () => calibrate([c]);
 $('calib-stop').onclick = () => { state.cancel = true; };
 $('calib-skip').onclick = () => { state.skippedCalibration = true; state.setupOpen = false; render(); };
 $('delete-start').onclick = () => {
-  $('delete-who').textContent = state.user;
+  $('delete-who').textContent = personLabel(state.user);
   $('delete-confirm').hidden = false;
 };
 $('delete-cancel').onclick = () => { $('delete-confirm').hidden = true; };
