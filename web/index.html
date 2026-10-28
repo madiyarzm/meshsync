@@ -93,7 +93,10 @@
   .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
   .stage .empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; color: #c9d3da; }
   .stage .empty p { margin: 0; max-width: 36ch; font-size: 14px; }
-  .face { position: absolute; top: 12px; left: 12px; }
+  .cam-head { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--rule); }
+  .cam-head h2 { margin: 0; }
+  .cam-head.done .step-num { background: var(--ok); color: #fff; }
+  .cam-head.current .step-num { background: var(--live); color: #fff; }
   .cue { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 20px 16px; background: linear-gradient(transparent, rgba(10, 18, 25, .85) 38%); color: #fff; }
   .cue-text { font-size: clamp(22px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
   .cue-sub { font-size: 14px; color: #d3dce2; margin-top: 2px; min-height: 21px; }
@@ -169,7 +172,7 @@
   .headline b { font-weight: 700; }
 
   /* ---- mesh extras ---- */
-  p.key { display: block; line-height: 1.6; }
+  p.key { display: flex; flex-wrap: wrap; gap: 4px 18px; line-height: 1.6; }
   .key .dot { display: inline-block; vertical-align: 1px; border-radius: 50%; margin: 0 2px; }
   .key .dot.data { width: 8px; height: 8px; background: var(--live); }
   .key .dot.beat { width: 6px; height: 6px; background: var(--faint); }
@@ -218,13 +221,13 @@
   .slide.active { display: block; }
   .slide h2 { font-size: 22px; letter-spacing: -0.015em; margin: 8px 0 6px; }
   .slide p { margin: 0; color: var(--ink); max-width: 64ch; }
+  .slide h2 + p { min-height: 48px; }
   .art { width: 100%; height: auto; display: block; margin: 12px 0 6px; background: var(--sunken); border-radius: 12px; }
   .art text { font-family: var(--font); font-size: 13px; }
   .art .t-muted { fill: var(--muted); } .art .t-dim { fill: #8fa2b1; font-size: 12px; } .art .t-white { fill: #fff; } .art .t-ink { fill: var(--ink); }
   .art .t-faint { fill: var(--faint); } .art .t-strong { fill: var(--ink); font-weight: 600; } .art .t-big { font-size: 17px; font-weight: 700; }
   .art .t-live { fill: var(--live); font-weight: 600; } .art .t-ok { fill: var(--ok); font-weight: 600; } .art .t-bad { fill: var(--danger); font-weight: 700; }
   .art .t-num { fill: #fff; font: 600 13px var(--mono); }
-  .tour-list { margin: 10px 0 14px; padding-left: 20px; display: grid; gap: 8px; }
   .tour-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
 
   /* slide 1: numbers leave, the picture stays */
@@ -262,7 +265,15 @@
   @keyframes hello-r { from { transform: translateX(0); } to { transform: translateX(210px); } }
   @keyframes hello-l { from { transform: translateX(0); } to { transform: translateX(-210px); } }
 
-  /* slide 4: the sum appears */
+  /* shared calibration: personal samples grow on top of the shared baseline, 6 s loop */
+  .grow { transform-box: fill-box; transform-origin: left; }
+  .slide.active .grow { animation: grow 6s ease-in-out infinite; }
+  @keyframes grow { 0%, 20% { transform: scaleX(0); } 70%, 92% { transform: scaleX(1); } 100% { transform: scaleX(0); } }
+  .grow-label, .grow-note { opacity: 0; }
+  .slide.active .grow-label, .slide.active .grow-note { animation: grow-text 6s infinite; }
+  @keyframes grow-text { 0%, 62% { opacity: 0; } 70%, 92% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* merge: the sum appears */
   .m2, .m3, .m4 { opacity: 0; }
   .slide.active .m2 { animation: appear .5s .6s forwards; }
   .slide.active .m3 { animation: appear .5s 1.5s forwards; }
@@ -295,7 +306,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .hop, .del-ring, .del-label, .c-off, .c-off-label, .dab, .dbc { opacity: 0 !important; }
-    .fill-b, .fill-c, .got-b, .got-c, .m2, .m3, .m4, .gone-a, .gone-b, .gone-c { opacity: 1 !important; }
+    .fill-b, .fill-c, .got-b, .got-c, .m2, .m3, .m4, .gone-a, .gone-b, .gone-c, .grow-label, .grow-note { opacity: 1 !important; }
     .keep-a, .keep-b, .keep-c { opacity: 0 !important; }
   }
 
@@ -315,7 +326,7 @@
     <section class="panel summary" id="setup-summary" hidden>
       <span class="chip done" id="sum-hub"></span>
       <span class="chip done" id="sum-person"></span>
-      <span class="chip done" id="sum-calib"></span>
+      <span class="chip done" id="sum-calib" hidden></span>
       <button class="link" id="setup-open">Change</button>
     </section>
 
@@ -323,12 +334,12 @@
       <div class="step" id="step-connect">
         <span class="step-num">1</span>
         <div class="step-body">
-          <h2>Connect a hub</h2>
-          <p class="lead">Plug a hub into this laptop with USB. No hub? Simulate three.</p>
+          <h2>Hub</h2>
+          <p class="lead">Connect an ESP32 hub over USB, or run three simulated hubs.</p>
           <div class="row">
-            <button class="btn primary" id="connect-serial">Connect hub</button>
+            <button class="btn primary" id="connect-serial">Connect</button>
             <button class="btn" id="reconnect" hidden>Reconnect</button>
-            <button class="btn quiet" id="connect-sim">Simulate hubs</button>
+            <button class="btn quiet" id="connect-sim">Simulate</button>
           </div>
           <p class="status-line" id="connect-status"></p>
         </div>
@@ -336,45 +347,31 @@
       <div class="step" id="step-you">
         <span class="step-num">2</span>
         <div class="step-body">
-          <h2>Who's at the camera?</h2>
-          <p class="lead">The hub gives each person a short ID. It only labels your calibration; no name, no photo.</p>
+          <h2>User</h2>
+          <p class="lead">Calibration is stored under a short ID. No name or image is stored.</p>
           <div class="row">
-            <input class="field small-field" id="person-typed" placeholder="e.g. A3" autocomplete="off" spellcheck="false" aria-label="Your ID">
-            <button class="btn" id="person-use">Use</button>
-            <button class="btn quiet small" id="person-new">I'm new here</button>
+            <input class="field small-field" id="person-typed" placeholder="User ID (e.g. A3)" autocomplete="off" spellcheck="false" aria-label="User ID">
+            <button class="btn" id="person-use">Select</button>
+            <button class="btn quiet small" id="person-new">New user</button>
           </div>
           <p class="status-line" id="user-epoch"></p>
-        </div>
-      </div>
-      <div class="step" id="step-calib">
-        <span class="step-num">3</span>
-        <div class="step-body">
-          <h2>Teach the hub your faces</h2>
-          <p class="lead">The camera asks for each face in turn. Hold it for about 3 seconds while the bar fills.</p>
-          <div class="row">
-            <button class="btn primary" id="calib-all">Record all three, about 15 s</button>
-            <button class="btn" id="calib-stop" hidden>Stop</button>
-            <button class="btn quiet" id="calib-skip">Try it without calibrating</button>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <span class="note" style="margin:0">Add more of one face:</span>
-            <button class="btn small" id="calib-0">neutral</button><button class="btn small" id="calib-1">eyebrows up</button><button class="btn small" id="calib-2">smile</button>
-          </div>
-          <p class="note" id="skip-row" hidden><span id="skip-text"></span></p>
-          <p class="status-line" id="calib-prompt"></p>
         </div>
       </div>
     </section>
 
     <section class="panel camera" aria-label="Camera">
+      <div class="cam-head step" id="step-camera">
+        <span class="step-num">3</span>
+        <div class="step-body"><h2>Camera</h2></div>
+        <span class="chip" id="face-status" hidden>No face</span>
+      </div>
       <div class="stage">
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
         <div class="empty" id="camera-empty">
-          <p id="camera-status">The camera image stays on this laptop. Only 12 numbers per frame go to the hub.</p>
+          <p id="camera-status">Video is processed locally and never leaves this laptop.</p>
           <button class="btn primary" id="camera-start">Start camera</button>
         </div>
-        <span class="chip face" id="face-status" hidden>No face</span>
         <div class="cue" id="cue" hidden>
           <div class="cue-text" id="cue-text"></div>
           <div class="cue-sub" id="cue-sub"></div>
@@ -383,21 +380,43 @@
       </div>
     </section>
 
-    <section class="panel readout" aria-label="Detected gesture">
+    <section class="panel steps" id="calib-card" aria-label="Calibration">
+      <div class="step" id="step-calib">
+        <span class="step-num">4</span>
+        <div class="step-body">
+          <h2>Calibration</h2>
+          <p class="lead">Hold each gesture for 3 seconds when prompted.</p>
+          <div class="row">
+            <button class="btn primary" id="calib-all">Calibrate all gestures (15 s)</button>
+            <button class="btn" id="calib-stop" hidden>Stop</button>
+            <button class="btn quiet" id="calib-skip">Use shared calibration</button>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <span class="note" style="margin:0">Add samples:</span>
+            <button class="btn small" id="calib-0">Neutral</button><button class="btn small" id="calib-1">Brows raised</button><button class="btn small" id="calib-2">Smile</button>
+          </div>
+          <p class="note" id="skip-row" hidden><span id="skip-text"></span></p>
+          <p class="status-line" id="calib-prompt"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel readout" aria-label="Prediction">
       <div>
-        <div class="word idle" id="pred-label">No gesture yet</div>
+        <div class="word idle" id="pred-label">No prediction</div>
         <div class="sure" id="pred-conf"></div>
       </div>
       <div class="bars">
-        <span id="name-0">neutral</span><i class="v0"><b id="bar-0"></b></i><em id="barv-0"></em>
-        <span id="name-1">eyebrows up</span><i class="v1"><b id="bar-1"></b></i><em id="barv-1"></em>
-        <span id="name-2">smile</span><i class="v2"><b id="bar-2"></b></i><em id="barv-2"></em>
+        <span id="name-0">Neutral</span><i class="v0"><b id="bar-0"></b></i><em id="barv-0"></em>
+        <span id="name-1">Brows raised</span><i class="v1"><b id="bar-1"></b></i><em id="barv-1"></em>
+        <span id="name-2">Smile</span><i class="v2"><b id="bar-2"></b></i><em id="barv-2"></em>
       </div>
       <div class="footer">
         <p class="source" id="pred-samples"></p>
         <div class="mix">
-          <label for="lambda">Other people's calibration counts</label>
-          <div class="scale"><span>not at all</span><input type="range" id="lambda" min="0" max="2" step="0.1" value="1"><span id="lambda-value">as much as yours</span></div>
+          <label for="lambda">Shared calibration weight</label>
+          <div class="scale"><span>Personal only</span><input type="range" id="lambda" min="0" max="2" step="0.1" value="1"><span id="lambda-value">Equal to personal</span></div>
+          <p class="note" style="margin-top:4px">Higher values help new users; lower values favor your own data.</p>
         </div>
       </div>
     </section>
@@ -405,47 +424,47 @@
 
   <div class="region" aria-label="The system">
     <section class="panel mesh" aria-label="Mesh">
-      <div class="head"><h2>The mesh</h2><span class="note" style="margin:0" id="mesh-note"></span></div>
-      <p class="headline" id="self-text">Connect a hub to see the hubs around it and the radio traffic between them.</p>
+      <div class="head"><h2>Mesh</h2><span class="note" style="margin:0" id="mesh-note"></span></div>
+      <p class="headline" id="self-text">No hub connected.</p>
       <svg id="mesh-svg" viewBox="0 0 520 200" role="img" aria-label="Hubs and radio links">
         <g id="mesh-links"></g><g id="mesh-pulses"></g><g id="mesh-nodes"></g>
       </svg>
-      <p class="key" id="mesh-key" hidden>Each dot is one radio message between hubs: <span class="dot data"></span> carries calibration or a deletion, <span class="dot beat"></span> is a once-a-second hello. A thicker line means a stronger signal.</p>
+      <p class="key" id="mesh-key" hidden><span><span class="dot data"></span> Calibration update or deletion</span><span><span class="dot beat"></span> Heartbeat (1/s)</span><span>Line width = signal strength</span></p>
       <ol class="activity" id="activity" hidden></ol>
       <div class="sim" id="sim-panel" hidden>
-        <div class="head"><p style="margin:0">Three simulated hubs in a line: A and C reach each other only through B. The radio loses 10% of packets.</p><button class="btn small" id="sim-exit" style="white-space:nowrap">Use a real hub</button></div>
-        <div class="row"><span class="label">Cable plugged into</span><span class="row" id="sim-attach"></span></div>
+        <div class="head"><p style="margin:0">Simulation: three hubs in a line. A and C connect only through B. 10% packet loss.</p><button class="btn small" id="sim-exit" style="white-space:nowrap">Switch to USB hub</button></div>
+        <div class="row"><span class="label">USB connected to</span><span class="row" id="sim-attach"></span></div>
         <div class="row"><span class="label">Radio links</span><span class="row" id="sim-links"></span></div>
       </div>
     </section>
 
     <section class="panel" aria-label="What the hub receives">
-      <div class="head"><h2>What the hub receives</h2><span class="note" style="margin:0" id="wire-rate"></span></div>
-      <p class="headline">No image. Each frame, the hub gets one short line of numbers, <b id="wire-bytes">about 60 bytes</b>. One camera frame would be <b>921,600 bytes</b>.</p>
+      <div class="head"><h2>Data sent to hub</h2><span class="note" style="margin:0" id="wire-rate"></span></div>
+      <p class="headline">Per frame: 12 features, <b id="wire-bytes">55–70 bytes</b>. A raw 640×480 frame is <b>921,600 bytes</b>.</p>
       <div class="wire" id="wire">
-        <div class="wire-line"><span class="wire-dir">laptop → hub</span><div class="tokens" id="wire-out"><span class="muted-token">Waiting for the camera…</span></div></div>
-        <div class="wire-line"><span class="wire-dir">hub → laptop</span><div class="tokens" id="wire-in"><span class="muted-token">The hub's answer appears here.</span></div></div>
+        <div class="wire-line"><span class="wire-dir">laptop → hub</span><div class="tokens" id="wire-out"><span class="muted-token">No data</span></div></div>
+        <div class="wire-line"><span class="wire-dir">hub → laptop</span><div class="tokens" id="wire-in"><span class="muted-token">No response</span></div></div>
       </div>
-      <p class="note" style="margin-top:14px">The 12 numbers in that line, right now:</p>
+      <p class="note" style="margin-top:14px">Features (live)</p>
       <div class="values" id="values"></div>
     </section>
 
     <section class="panel" aria-label="Your data">
-      <h2 id="data-title">Your data on the mesh</h2>
-      <p class="lead" id="data-lead" style="margin-bottom:0">Choose your number to see where your calibration is.</p>
+      <h2 id="data-title">Your data</h2>
+      <p class="lead" id="data-lead" style="margin-bottom:0">Select a user ID to see which hubs hold your calibration.</p>
       <ul class="hubs" id="hubs"></ul>
       <div class="delete-row">
-        <button class="btn danger" id="delete-start">Delete my data from every hub</button>
+        <button class="btn danger" id="delete-start">Delete my data from all hubs</button>
         <div class="confirm" id="delete-confirm" hidden>
-          Delete all of <b id="delete-who"></b>'s calibration on every hub, including hubs that are off right now? This can't be undone.
-          <div class="row" style="margin-top:10px"><button class="btn solid-danger small" id="delete-yes">Delete everywhere</button><button class="btn small" id="delete-cancel">Keep my data</button></div>
+          Delete all calibration for user <b id="delete-who"></b> from all hubs, including hubs that are offline? This cannot be undone.
+          <div class="row" style="margin-top:10px"><button class="btn solid-danger small" id="delete-yes">Delete</button><button class="btn small" id="delete-cancel">Cancel</button></div>
         </div>
         <p class="status-line" id="delete-status"></p>
       </div>
       <details class="everything">
-        <summary id="everything-title">Everyone's calibration on this hub</summary>
+        <summary id="everything-title">Stored on this hub</summary>
         <table>
-          <thead><tr><th>Person</th><th>Recorded at</th><th class="num">Samples</th></tr></thead>
+          <thead><tr><th>User</th><th>Recorded at</th><th class="num">Samples</th></tr></thead>
           <tbody id="slots"><tr class="empty-row"><td colspan="3">Nothing yet.</td></tr></tbody>
         </table>
       </details>
@@ -482,7 +501,7 @@
 </div>
 
 
-<div class="tour" id="tour" hidden role="dialog" aria-modal="true" aria-label="How meshsync works">
+<div class="tour" id="tour" hidden role="dialog" aria-modal="true" aria-label="How it works">
   <div class="tour-card">
     <div class="tour-top"><div class="tour-dots" id="tour-dots"></div><button class="link" id="tour-close">Close</button></div>
 
@@ -491,35 +510,34 @@
         <rect x="20" y="24" width="190" height="142" rx="8" fill="#1b252d"/>
         <ellipse cx="115" cy="94" rx="38" ry="48" fill="none" stroke="#8fa2b1" stroke-width="2"/>
         <g class="lm" fill="#8fb0ff"><circle cx="99" cy="84" r="3"/><circle cx="131" cy="84" r="3"/><circle cx="97" cy="70" r="3"/><circle cx="133" cy="70" r="3"/><circle cx="115" cy="100" r="3"/><circle cx="101" cy="118" r="3"/><circle cx="129" cy="118" r="3"/></g>
-        <text x="115" y="190" text-anchor="middle" class="t-strong">camera frame: 921,600 bytes</text>
-        <text x="115" y="208" text-anchor="middle" class="t-muted">stays on this laptop</text>
+        <text x="115" y="190" text-anchor="middle" class="t-strong">640×480 frame: 921,600 bytes</text>
+        <text x="115" y="208" text-anchor="middle" class="t-muted">stays on the laptop</text>
         <g class="bars" transform="translate(258 28)"><rect x="0" y="0" width="8" height="40" rx="2" style="animation-delay:-0.00s"/><rect x="12" y="0" width="8" height="40" rx="2" style="animation-delay:-0.37s"/><rect x="24" y="0" width="8" height="40" rx="2" style="animation-delay:-0.74s"/><rect x="36" y="0" width="8" height="40" rx="2" style="animation-delay:-1.11s"/><rect x="48" y="0" width="8" height="40" rx="2" style="animation-delay:-0.08s"/><rect x="60" y="0" width="8" height="40" rx="2" style="animation-delay:-0.45s"/><rect x="72" y="0" width="8" height="40" rx="2" style="animation-delay:-0.82s"/><rect x="84" y="0" width="8" height="40" rx="2" style="animation-delay:-1.19s"/><rect x="96" y="0" width="8" height="40" rx="2" style="animation-delay:-0.16s"/><rect x="108" y="0" width="8" height="40" rx="2" style="animation-delay:-0.53s"/><rect x="120" y="0" width="8" height="40" rx="2" style="animation-delay:-0.90s"/><rect x="132" y="0" width="8" height="40" rx="2" style="animation-delay:-1.27s"/></g>
-        <text x="326" y="86" text-anchor="middle" class="t-muted">12 numbers</text>
         <line x1="222" y1="110" x2="430" y2="110" stroke="#d5dbe0" stroke-width="2" stroke-dasharray="4 5"/>
-        <g class="packet"><rect x="222" y="98" width="72" height="24" rx="6" fill="#2f5bea"/><text x="258" y="114" text-anchor="middle" class="t-white">56 bytes</text></g>
+        <g class="packet"><rect x="222" y="98" width="86" height="24" rx="6" fill="#2f5bea"/><text x="265" y="114" text-anchor="middle" class="t-white">12 features</text></g>
         <rect x="440" y="70" width="180" height="80" rx="10" fill="#15222c"/>
-        <text x="530" y="106" text-anchor="middle" class="t-white t-big">hub A</text>
-        <text x="530" y="126" text-anchor="middle" class="t-dim">ESP32 board, $5</text>
+        <text x="530" y="106" text-anchor="middle" class="t-white t-big">Hub A</text>
+        <text x="530" y="126" text-anchor="middle" class="t-dim">ESP32</text>
         <circle class="led" cx="604" cy="84" r="5" fill="#3d7bff"/>
-        <text x="530" y="172" text-anchor="middle" class="t-muted">over USB</text>
+        <text x="530" y="172" text-anchor="middle" class="t-muted">USB serial</text>
       </svg>
-      <h2>Your face becomes 12 numbers</h2>
-      <p>MediaPipe finds your face right here in the browser and measures 12 things about it, like how high your eyebrows are. Only that line of numbers, about 56 bytes, goes to the board. The picture never leaves the laptop.</p>
+      <h2>On the laptop</h2>
+      <p>MediaPipe finds the face in each video frame and measures 12 features, such as eyebrow height and mouth width. Only those 12 numbers are sent to the hub. The video stays on the laptop.</p>
     </section>
 
     <section class="slide">
       <svg class="art" viewBox="0 0 640 230" aria-hidden="true">
         <g class="feed"><circle cx="30" cy="120" r="6" fill="#2f5bea"/><circle cx="30" cy="120" r="6" fill="#2f5bea" style="animation-delay:-.5s"/><circle cx="30" cy="120" r="6" fill="#2f5bea" style="animation-delay:-1s"/></g>
         <rect x="160" y="22" width="460" height="186" rx="12" fill="#15222c"/>
-        <text x="182" y="52" class="t-dim">What hub A keeps for each face (example numbers)</text>
-        <text x="182" y="84" class="t-dim">face</text><text x="390" y="84" text-anchor="end" class="t-dim">samples</text><text x="490" y="84" text-anchor="end" class="t-dim">sum</text><text x="600" y="84" text-anchor="end" class="t-dim">sum of squares</text>
+        <text x="182" y="52" class="t-dim">Running totals per gesture, user A3 (example values)</text>
+        <text x="182" y="84" class="t-dim">gesture</text><text x="390" y="84" text-anchor="end" class="t-dim">samples</text><text x="490" y="84" text-anchor="end" class="t-dim">sum</text><text x="600" y="84" text-anchor="end" class="t-dim">sum of squares</text>
         <line x1="182" y1="94" x2="600" y2="94" stroke="#2c3d4a"/>
-        <text x="182" y="124" class="t-white">neutral</text><text x="390" y="124" text-anchor="end" class="t-num" id="tc-0-0">0</text><text x="490" y="124" text-anchor="end" class="t-num" id="tc-0-1">0</text><text x="600" y="124" text-anchor="end" class="t-num" id="tc-0-2">0</text>
-        <text x="182" y="156" class="t-white">eyebrows up</text><text x="390" y="156" text-anchor="end" class="t-num" id="tc-1-0">0</text><text x="490" y="156" text-anchor="end" class="t-num" id="tc-1-1">0</text><text x="600" y="156" text-anchor="end" class="t-num" id="tc-1-2">0</text>
-        <text x="182" y="188" class="t-white">smile</text><text x="390" y="188" text-anchor="end" class="t-num" id="tc-2-0">0</text><text x="490" y="188" text-anchor="end" class="t-num" id="tc-2-1">0</text><text x="600" y="188" text-anchor="end" class="t-num" id="tc-2-2">0</text>
+        <text x="182" y="124" class="t-white">Neutral</text><text x="390" y="124" text-anchor="end" class="t-num" id="tc-0-0">0</text><text x="490" y="124" text-anchor="end" class="t-num" id="tc-0-1">0</text><text x="600" y="124" text-anchor="end" class="t-num" id="tc-0-2">0</text>
+        <text x="182" y="156" class="t-white">Brows raised</text><text x="390" y="156" text-anchor="end" class="t-num" id="tc-1-0">0</text><text x="490" y="156" text-anchor="end" class="t-num" id="tc-1-1">0</text><text x="600" y="156" text-anchor="end" class="t-num" id="tc-1-2">0</text>
+        <text x="182" y="188" class="t-white">Smile</text><text x="390" y="188" text-anchor="end" class="t-num" id="tc-2-0">0</text><text x="490" y="188" text-anchor="end" class="t-num" id="tc-2-1">0</text><text x="600" y="188" text-anchor="end" class="t-num" id="tc-2-2">0</text>
       </svg>
-      <h2>The board learns, not the laptop</h2>
-      <p>The board keeps no frames. For each face it keeps three running totals per number: how many samples, their sum, and the sum of their squares. That's enough to rebuild the model whenever it's needed, in about 1 ms on the board. Learning is just adding.</p>
+      <h2>On the hub</h2>
+      <p>The ESP32 stores calibration as running totals per user and gesture. It classifies each incoming frame against those totals in 0.6 ms on average (measured on the board, including the reply).</p>
     </section>
 
     <section class="slide">
@@ -530,27 +548,43 @@
         <circle cx="110" cy="100" r="30" fill="#15222c"/><text x="110" y="106" text-anchor="middle" class="t-white t-big">A</text>
         <circle cx="320" cy="100" r="30" fill="#fff" stroke="#c98a12" stroke-width="3"/><circle class="fill-b" cx="320" cy="100" r="30" fill="#2f5bea"/><text x="320" y="106" text-anchor="middle" class="t-big t-ink fill-b-text">B</text>
         <circle cx="530" cy="100" r="30" fill="#fff" stroke="#c98a12" stroke-width="3"/><circle class="fill-c" cx="530" cy="100" r="30" fill="#2f5bea"/><text x="530" y="106" text-anchor="middle" class="t-big t-ink fill-c-text">C</text>
-        <text x="110" y="152" text-anchor="middle" class="t-muted">plugged into a laptop</text><text x="320" y="152" text-anchor="middle" class="t-muted">on a charger</text><text x="530" y="152" text-anchor="middle" class="t-muted">on a charger, out of A's range</text>
+        <text x="110" y="152" text-anchor="middle" class="t-muted">connected (USB)</text><text x="320" y="152" text-anchor="middle" class="t-muted">no laptop</text><text x="530" y="152" text-anchor="middle" class="t-muted">no laptop, out of A's range</text>
         <text x="110" y="174" text-anchor="middle" class="t-live">A3: 135 samples</text>
         <text x="320" y="174" text-anchor="middle" class="t-live got-b">A3: 135 samples</text>
         <text x="530" y="174" text-anchor="middle" class="t-live got-c">A3: 135 samples</text>
       </svg>
-      <h2>Boards copy each other over radio, with no internet</h2>
-      <p>Every second each board sends a short hello carrying a fingerprint of everything it holds. When two fingerprints differ, the boards swap only what's missing, and a board in the middle passes it on. Between two real boards a calibration arrived 1.3 s after it was saved. No Wi-Fi network, no server.</p>
+      <h2>Between hubs</h2>
+      <p>Hubs exchange calibration over ESP-NOW, a direct radio link between ESP32 boards. No router, internet, or server is involved.</p>
     </section>
 
     <section class="slide">
       <svg class="art" viewBox="0 0 640 230" aria-hidden="true">
-        <g class="m1"><rect x="20" y="40" width="170" height="104" rx="10" fill="#f2f4f6" stroke="#d5dbe0"/><text x="105" y="70" text-anchor="middle" class="t-muted">recorded at A</text><text x="105" y="100" text-anchor="middle" class="t-ink t-big">45 samples</text><text x="105" y="124" text-anchor="middle" class="t-muted">sum 31,500</text></g>
-        <text x="212" y="100" text-anchor="middle" class="t-ink t-big m2">+</text>
-        <g class="m2"><rect x="235" y="40" width="170" height="104" rx="10" fill="#f2f4f6" stroke="#d5dbe0"/><text x="320" y="70" text-anchor="middle" class="t-muted">recorded at B</text><text x="320" y="100" text-anchor="middle" class="t-ink t-big">90 samples</text><text x="320" y="124" text-anchor="middle" class="t-muted">sum 63,000</text></g>
-        <text x="428" y="100" text-anchor="middle" class="t-ink t-big m3">=</text>
-        <g class="m3"><rect x="450" y="40" width="170" height="104" rx="10" fill="#15222c"/><text x="535" y="70" text-anchor="middle" class="t-dim">on every board</text><text x="535" y="100" text-anchor="middle" class="t-white t-big">135 samples</text><text x="535" y="124" text-anchor="middle" class="t-dim">sum 94,500</text></g>
-        <text x="535" y="176" text-anchor="middle" class="t-ok m4">✓ the same as all 135 in one place</text>
-        <text x="320" y="210" text-anchor="middle" class="t-muted m4">(example numbers)</text>
+        <text x="40" y="58" class="t-strong">Model for new user A4</text>
+        <rect x="40" y="76" width="560" height="40" rx="8" fill="#e7ebee"/>
+        <rect x="40" y="76" width="250" height="40" rx="8" fill="#94a1ab"/>
+        <rect class="grow" x="290" y="76" width="310" height="40" fill="#2f5bea"/>
+        <text x="165" y="101" text-anchor="middle" class="t-white">shared: 181 samples</text>
+        <text x="445" y="101" text-anchor="middle" class="t-white grow-label">personal: 135 samples</text>
+        <text x="40" y="150" class="t-muted">Frame 1: prediction from the shared baseline.</text>
+        <text x="40" y="172" class="t-muted grow-note">After calibration: personal samples added on top.</text>
+        <text x="40" y="208" class="t-dim">(example values)</text>
       </svg>
-      <h2>Combining boards is exact</h2>
-      <p>Totals simply add up, so combining boards gives exactly the model you'd get with all the data in one place. It isn't an average of models, and it isn't approximate. Lost packets, repeated packets and the order they arrive in don't change the result. That was checked in 500 random simulated runs.</p>
+      <h2>Shared calibration</h2>
+      <p>A new user starts with everyone else's calibration as a baseline, then adds their own.</p>
+    </section>
+
+    <section class="slide">
+      <svg class="art" viewBox="0 0 640 230" aria-hidden="true">
+        <g class="m1"><rect x="20" y="40" width="170" height="104" rx="10" fill="#f2f4f6" stroke="#d5dbe0"/><text x="105" y="70" text-anchor="middle" class="t-muted">hub A, while apart</text><text x="105" y="100" text-anchor="middle" class="t-ink t-big">45 samples</text><text x="105" y="124" text-anchor="middle" class="t-muted">sum 31,500</text></g>
+        <text x="212" y="100" text-anchor="middle" class="t-ink t-big m2">+</text>
+        <g class="m2"><rect x="235" y="40" width="170" height="104" rx="10" fill="#f2f4f6" stroke="#d5dbe0"/><text x="320" y="70" text-anchor="middle" class="t-muted">hub B, while apart</text><text x="320" y="100" text-anchor="middle" class="t-ink t-big">90 samples</text><text x="320" y="124" text-anchor="middle" class="t-muted">sum 63,000</text></g>
+        <text x="428" y="100" text-anchor="middle" class="t-ink t-big m3">=</text>
+        <g class="m3"><rect x="450" y="40" width="170" height="104" rx="10" fill="#15222c"/><text x="535" y="70" text-anchor="middle" class="t-dim">every hub, reconnected</text><text x="535" y="100" text-anchor="middle" class="t-white t-big">135 samples</text><text x="535" y="124" text-anchor="middle" class="t-dim">sum 94,500</text></g>
+        <text x="535" y="176" text-anchor="middle" class="t-ok m4">✓ same result in any order</text>
+        <text x="320" y="210" text-anchor="middle" class="t-dim m4">(example values)</text>
+      </svg>
+      <h2>Disconnected hubs</h2>
+      <p>Hubs keep working when out of range. When they reconnect, their calibration merges to exactly the same result on every hub, regardless of the order updates arrive.</p>
     </section>
 
     <section class="slide">
@@ -562,26 +596,13 @@
         <g class="c-on"><circle cx="530" cy="100" r="30" fill="#2f5bea"/><text x="530" y="106" text-anchor="middle" class="t-white t-big">C</text></g>
         <g class="c-off"><circle cx="530" cy="100" r="30" fill="#fff" stroke="#94a1ab" stroke-width="2" stroke-dasharray="5 4"/><text x="530" y="106" text-anchor="middle" class="t-big t-faint">C</text></g>
         <text x="110" y="52" text-anchor="middle" class="t-bad del-label">Delete A3</text>
-        <text x="530" y="152" text-anchor="middle" class="t-muted c-off-label">turned off</text>
-        <text x="110" y="174" text-anchor="middle" class="t-live keep-a">A3: 135 samples</text><text x="110" y="174" text-anchor="middle" class="t-ok gone-a">deleted ✓</text>
-        <text x="320" y="174" text-anchor="middle" class="t-live keep-b">A3: 135 samples</text><text x="320" y="174" text-anchor="middle" class="t-ok gone-b">deleted ✓</text>
-        <text x="530" y="174" text-anchor="middle" class="t-live keep-c">A3: 135 samples</text><text x="530" y="174" text-anchor="middle" class="t-ok gone-c">deleted ✓</text>
+        <text x="530" y="152" text-anchor="middle" class="t-muted c-off-label">offline</text>
+        <text x="110" y="174" text-anchor="middle" class="t-live keep-a">A3: 135 samples</text><text x="110" y="174" text-anchor="middle" class="t-ok gone-a">removed ✓</text>
+        <text x="320" y="174" text-anchor="middle" class="t-live keep-b">A3: 135 samples</text><text x="320" y="174" text-anchor="middle" class="t-ok gone-b">removed ✓</text>
+        <text x="530" y="174" text-anchor="middle" class="t-live keep-c">A3: 135 samples</text><text x="530" y="174" text-anchor="middle" class="t-ok gone-c">removed ✓</text>
       </svg>
-      <h2>Delete means every copy, even on boards that were off</h2>
-      <p>"Delete" raises your deletion counter, and the counter spreads like any other data. A board that sees a higher counter erases everything of yours made before it, including data it recorded while it was off or out of range. In 500 of 500 simulated runs, no deleted data ever came back.</p>
-    </section>
-
-    <section class="slide">
-      <h2 style="margin-top:6px">Why it's interesting</h2>
-      <ul class="tour-list">
-        <li><b>Calibrate once, use any station.</b> You calibrated at one board; another board recognized you without calibrating.</li>
-        <li><b>A head start for newcomers.</b> A person who never calibrated was recognized using someone else's samples.</li>
-        <li><b>No internet, no server, no cloud.</b> Small boards and a radio are the whole system.</li>
-        <li><b>Exact, not approximate.</b> Combining boards equals having all the data in one place.</li>
-        <li><b>Deletion you can trust.</b> It reaches every copy, including boards that were off.</li>
-        <li><b>The same code everywhere.</b> The C++ on the boards also runs in this page, so "Simulate hubs" is the real system.</li>
-      </ul>
-      <p class="note">The webcam is a stand-in. The part that's new is underneath: calibration that is shared, merged exactly, and deletable, for any device that has to be tuned to one person.</p>
+      <h2>Deleting data</h2>
+      <p>Deleting a user creates a deletion record that spreads to every hub. A hub that was offline during the deletion still removes the data when it reconnects, so deleted data never comes back.</p>
     </section>
 
     <div class="tour-nav"><button class="btn" id="tour-back">Back</button><span class="note" style="margin:0" id="tour-count"></span><button class="btn primary" id="tour-next">Next</button></div>
