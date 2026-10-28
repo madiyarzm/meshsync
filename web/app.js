@@ -341,10 +341,22 @@ hub.onClose = () => {
 hub.onEvent = handleEvent;
 hub.onTraffic = recordTraffic;
 
+// Forget everything shown about the previous hub (its map, traffic and stored calibration).
+function clearHubView() {
+  state.mesh = { self: null, peers: {}, slots: [] };
+  state.hubLetter = '';
+  state.tracker = null;
+  pulses.length = 0;
+  for (const id of ['mesh-links', 'mesh-pulses', 'mesh-nodes']) $(id).replaceChildren();
+  $('mesh-key').hidden = true;
+  $('sim-panel').hidden = true;
+  $('self-text').textContent = 'Connect a hub to see the hubs around it and the radio traffic between them.';
+}
+
 async function connect(kind) {
   state.connected = false;
   state.sessions = {};
-  state.mesh = { self: null, peers: {}, slots: [] };
+  clearHubView();
   setStatus('Connecting', 'warn', kind === 'sim' ? 'Starting three simulated hubs…' : 'Choose the hub in the list Chrome shows (usually "CP2102" or "usbserial").');
   try {
     await hub.connect(kind, null);
@@ -379,7 +391,9 @@ async function handshake() {
   }
   state.hubLetter = hello.fields[1];
   state.connected = true;
-  setStatus(`Hub ${state.hubLetter} connected`, 'ok', `Connected to hub ${state.hubLetter}.`);
+  const simulated = hub.transport && hub.transport.kind === 'sim';
+  setStatus(simulated ? `Simulated hub ${state.hubLetter}` : `Hub ${state.hubLetter} connected`, 'ok',
+    simulated ? `Connected to simulated hub ${state.hubLetter}. "Connect hub" switches to a real one.` : `Connected to hub ${state.hubLetter}.`);
   log(`connected to hub ${state.hubLetter} (protocol ${hello.fields[2]}, ${hello.fields[3]} slots max)`);
   if (state.user) await sendUser();
   await hub.request(`LAMBDA ${Math.round(state.lambda * 1000)}`);
@@ -486,7 +500,7 @@ async function refreshCounts() {
   // COUNTS <type> <own0> <own1> <own2> <others0> <others1> <others2>
   // fields: COUNTS <type> <own0> <own1> <own2> <others0> <others1> <others2>
   state.counts = { mine: r.fields.slice(2, 5).map(Number), others: r.fields.slice(5, 8).map(Number) };
-  renderFaces();
+  render();
 }
 
 async function ensureSessions() {
@@ -545,7 +559,6 @@ async function calibrate(classes) {
       }
       let count = 0;
       state.recording = { label, count: 0 };
-      renderFaces();
       const started = performance.now();
       let next = performance.now();
       while (count < SAMPLES_PER_CLASS && !state.cancel) {
@@ -563,7 +576,6 @@ async function calibrate(classes) {
         if (!r.ok) throw new Error(`The hub refused a sample: ${r.code}`);
         count++;
         state.recording.count = count;
-        renderFaces();
         showCue(INSTRUCTIONS[label], 'Hold it', count / SAMPLES_PER_CLASS);
         showPrompt(`Recording: ${INSTRUCTIONS[label].toLowerCase()}.`);
         rows.push([Date.now(), state.user, state.hubLetter, 'gesture', label, '', '', ...features.blend, ...features.landmark]);
@@ -1305,7 +1317,7 @@ function render() {
   $('setup').hidden = folded;
   $('setup').className = 'panel steps' + (state.setupOpen && !state.calibrating ? ' open' : '');
   $('setup-summary').hidden = !folded;
-  $('sum-hub').textContent = `Hub ${state.hubLetter}`;
+  $('sum-hub').textContent = hub.transport && hub.transport.kind === 'sim' ? `Simulated hub ${state.hubLetter}` : `Hub ${state.hubLetter}`;
   $('sum-person').textContent = `You're ${personLabel(state.user)}`;
   $('sum-calib').textContent = calibrated ? `Calibrated, ${mySamplesHere()} samples`
     : state.deletion && state.deletion.user === state.user ? 'Data deleted' : 'Using other people\'s calibration';
@@ -1318,43 +1330,21 @@ function render() {
   $('calib-all').textContent = calibrated ? 'Record all three again, about 15 s' : 'Record all three, about 15 s';
   // Skipping only makes sense if someone else's calibration is on this hub.
   const othersHere = state.counts.others.reduce((a, b) => a + b, 0);
-  $('skip-row').hidden = calibrated || othersHere === 0 || state.calibrating;
-  $('skip-text').textContent = `Other people have taught this hub ${othersHere} samples.`;
-  $('user-epoch').textContent = state.user ? `You're ${personLabel(state.user)}. At another hub, pick ${personLabel(state.user)} from the list.` : '';
+  const canSkip = !calibrated && othersHere > 0 && !state.calibrating;
+  $('calib-skip').hidden = !canSkip;
+  $('skip-row').hidden = !canSkip;
+  $('skip-text').textContent = `Other people have taught this hub ${othersHere} samples, so it can guess your faces without yours.`;
+  $('user-epoch').textContent = state.user ? `You're ${personLabel(state.user)}. At another hub, type ${personLabel(state.user)} to use your calibration there.` : '';
   $('user-epoch').className = 'status-line';
   $('reconnect').hidden = !(state.lastSerialPort && !hub.transport);
-  renderPeople();
-  renderFaces();
   renderData();
   renderSlots();
 }
 
-// People this hub has calibration for, as buttons to pick yourself.
-function renderPeople() {
-  const totals = new Map();
-  for (const s of state.mesh.slots) {
-    if (s.type === 'gest_blend' && s.user) totals.set(s.user, (totals.get(s.user) || 0) + s.samples);
-  }
-  const people = [...totals.entries()].sort((a, b) => personLabel(a[0]).localeCompare(personLabel(b[0]), 'en', { numeric: true }));
-  $('people-block').hidden = people.length === 0;
-  $('people').innerHTML = people.map(([user, samples]) =>
-    `<button class="btn small ${user === state.user ? 'on' : ''}" data-user="${user}">${personLabel(user)}<small>${samples} samples</small></button>`).join('');
-}
-
-// One tile per face: how many samples the hub has of it, and a bar while it records.
-function renderFaces() {
-  for (let c = 0; c < 3; c++) {
-    const recording = state.recording.label === c;
-    const n = state.counts.mine[c] + (recording ? state.recording.count : 0);
-    $('tile-' + c).className = 'face-tile' + (recording ? ' active' : n >= SAMPLES_PER_CLASS ? ' done' : '');
-    $('count-' + c).textContent = recording ? `recording ${state.recording.count} of ${SAMPLES_PER_CLASS}` : n ? `${n} samples` : 'not yet';
-    $('meter-' + c).style.width = `${Math.min(100, (recording ? state.recording.count : n) / SAMPLES_PER_CLASS * 100)}%`;
-    $('calib-' + c).textContent = n ? 'Add more' : 'Record';
-  }
-}
-
 $('connect-serial').onclick = () => connect('serial');
 $('connect-sim').onclick = () => connect('sim');
+// Leaving the simulation: the simulated hubs stop, and Chrome asks which USB port to use.
+$('sim-exit').onclick = () => connect('serial');
 $('reconnect').onclick = async () => {
   try {
     await hub.connect('serial', state.lastSerialPort);
@@ -1369,14 +1359,10 @@ $('reconnect').onclick = async () => {
 $('camera-start').onclick = startCamera;
 $('setup-open').onclick = () => { state.setupOpen = true; render(); };
 $('person-new').onclick = newPerson;
-$('people').addEventListener('click', (event) => {
-  const button = event.target.closest('button');
-  if (button && !state.calibrating) choosePerson(+button.dataset.user);
-});
 const useTyped = () => {
   const user = parsePerson($('person-typed').value);
   if (!user) {
-    $('user-epoch').textContent = 'An ID looks like A3: a hub letter and a number.';
+    $('user-epoch').textContent = 'An ID looks like A3: a hub letter and a number. New? Press "I\'m new here".';
     $('user-epoch').className = 'status-line bad';
     return;
   }
@@ -1448,6 +1434,74 @@ if (!('serial' in navigator)) {
   $('connect-serial').disabled = true;
   $('connect-serial').title = 'Web Serial needs Chrome or Edge';
 }
+
+// ======================================================================================
+// "How it works": a short walkthrough of six slides
+// ======================================================================================
+
+const slides = [...document.querySelectorAll('#tour .slide')];
+let slide = 0;
+let tallyTimer = null;
+
+function showSlide(i) {
+  slide = Math.max(0, Math.min(slides.length - 1, i));
+  slides.forEach((el, k) => el.classList.toggle('active', k === slide));
+  $('tour-dots').innerHTML = slides.map((_, k) =>
+    `<button class="${k === slide ? 'on' : ''}" data-slide="${k}" aria-label="Step ${k + 1}"></button>`).join('');
+  $('tour-count').textContent = `${slide + 1} of ${slides.length}`;
+  $('tour-back').disabled = slide === 0;
+  $('tour-next').textContent = slide === slides.length - 1 ? 'Done' : 'Next';
+  clearInterval(tallyTimer);
+  if (slide === 1) startTally();
+}
+
+// Slide 2: running totals grow as example samples arrive (the same three sums the board keeps).
+function startTally() {
+  const totals = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const show = () => {
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) $(`tc-${r}-${c}`).textContent = totals[r][c].toLocaleString('en-US');
+  };
+  show();
+  let n = 0;
+  tallyTimer = setInterval(() => {
+    const face = Math.floor(n / 15) % 3;  // 15 samples of each face in turn
+    const value = 300 + face * 200 + Math.floor(Math.random() * 80);
+    totals[face][0] += 1;
+    totals[face][1] += value;
+    totals[face][2] += value * value;
+    show();
+    n = n >= 134 ? 0 : n + 1;
+    if (n === 0) totals.forEach((row) => row.fill(0));
+  }, 120);
+}
+
+function openTour() {
+  $('tour').hidden = false;
+  showSlide(0);
+  $('tour-next').focus();
+}
+
+function closeTour() {
+  $('tour').hidden = true;
+  clearInterval(tallyTimer);
+  $('tour-open').focus();
+}
+
+$('tour-open').onclick = openTour;
+$('tour-close').onclick = closeTour;
+$('tour-back').onclick = () => showSlide(slide - 1);
+$('tour-next').onclick = () => (slide === slides.length - 1 ? closeTour() : showSlide(slide + 1));
+$('tour-dots').addEventListener('click', (event) => {
+  const dot = event.target.closest('button');
+  if (dot) showSlide(+dot.dataset.slide);
+});
+$('tour').addEventListener('click', (event) => { if (event.target === $('tour')) closeTour(); });
+document.addEventListener('keydown', (event) => {
+  if ($('tour').hidden) return;
+  if (event.key === 'Escape') closeTour();
+  if (event.key === 'ArrowRight') showSlide(slide + 1);
+  if (event.key === 'ArrowLeft') showSlide(slide - 1);
+});
 
 // For debugging in the console. feed() stands in for the camera (tests without a webcam).
 window.meshsync = {
