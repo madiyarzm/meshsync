@@ -7,7 +7,8 @@ link (ESP-NOW), with no internet access and no central server. Calibrate at one 
 board recognizes you. A new user starts from everyone else's calibration. Deleting a user removes
 their data from every board, including boards that were offline at the time.
 
-[![Watch the 65-second demo](media/demo_poster.jpg)](media/meshsync_demo.mp4)
+
+https://github.com/user-attachments/assets/9da8b5ee-485f-42ba-9a1e-0822ac07727a
 
 > **Status: first iteration (v0.1).** It works end to end on real boards. Several parts are not
 > measured or built yet; see [Limits](#limits) and [Next](#next).
